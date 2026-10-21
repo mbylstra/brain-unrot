@@ -299,6 +299,8 @@ test('a question answered right is not asked again, and generation is told to av
   await clock.advance(3000)
   expect(calls[0]!.argv[2]).toMatch(/Don't repeat these questions:\n(- .*\n)*- Which folder holds the tests\?$/)
   expect(await ui.find({ type: 'Text', text: /1 generated questions ready/ })).toBeTruthy()
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /loadConfig/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -323,6 +325,10 @@ test('a question answered wrong comes round again', async ($, on) => {
   await ui.press({ key: (await ui.find({ type: 'Button', text: /\. b$/ }))!.key! })
   expect(await ui.find({ type: 'Text', text: /Wrong/ })).toBeTruthy()
 
+  // Not straight away while a seed question is left
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /Warm-up question/ })).toBeTruthy()
+  await ui.press({ key: 'no-idea' })
   await ui.press({ key: 'next' })
   expect(await ui.find({ type: 'Text', text: /Filler\?/ })).toBeTruthy()
   await ui.unmount()

@@ -147,23 +147,24 @@ async function record($: EngineInterface, outcome: Outcome) {
   debug($, `skill: ${outcome} -> difficulty ${next.difficulty}, streak ${next.streak}`)
 }
 
-async function nextQuestion($: EngineInterface): Promise<Question | undefined> {
+// `last` is the question just shown: it isn't asked again straight away while a seed question is left
+async function nextQuestion($: EngineInterface, last?: string): Promise<Question | undefined> {
   const s = await loadSkill($)
   const known = new Set((await loadAnswered($)).map(said))
+  const seeds = SEEDS.filter(q => !known.has(said(q.prompt)) && q.id !== last)
   // The newest question at or below your difficulty; questions above it wait,
   // and questions already answered right are dropped
   const taken = await withQueue($, async all => {
     const queue = all.filter(q => !known.has(said(q.prompt)))
-    const i = queue.findIndex(q => fits(q, s))
+    const i = queue.findIndex(q => fits(q, s) && (q.id !== last || seeds.length === 0))
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
-  const seeds = SEEDS.filter(q => !known.has(said(q.prompt)))
   const question = taken ?? seeds[random(seeds.length)]
   return question && shuffle(question)
 }
 
 const newRound = async ($: EngineInterface) => {
-  const question = await nextQuestion($)
+  const question = await nextQuestion($, (await read($, round))?.question.id)
   debug($, `round: ${question ? `${question.id} ${question.file ?? '(seed)'}` : '(none left)'}`)
   await update($, round, () => (question ? { question, guess: null } : null))
 }
@@ -532,7 +533,13 @@ export const register: Register = on => {
     )
 
     if (current === null) {
-      return frame(<Text dimColor>No new question yet. More are on the way.</Text>)
+      // Generation doesn't start a round, so Next checks again
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          <Text dimColor>No new question yet. More are on the way.</Text>
+          <Button key="next" hotkey="n" label="Next question" autoFocus onPress={() => newRound($)} />
+        </Box>
+      )
     }
 
     const { question, guess, chat, issue } = current

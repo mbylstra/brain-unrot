@@ -79,8 +79,9 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   difficulty and how many questions are ready.
 - **No repeats**: a question answered right (matched by prompt) is never
   asked again, seeds included; once every seed is answered and nothing is
-  ready, the pane says so. A question answered wrong, or with "no idea", goes
-  to the back of the queue to come round again.
+  ready, the pane says so, with a Next button to check again. A question
+  answered wrong, or with "no idea", goes to the back of the queue to come
+  round again, but not straight away while a seed question is left.
 - **Seeds**: 6 easy hand-written questions in `plugin/hooks/seeds.ts`.
 - **Tests**: `plugin/tests/quiz.test.tsx`, run with
   `claude plugin test plugin`.
