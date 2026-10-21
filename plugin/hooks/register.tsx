@@ -144,7 +144,7 @@ let isGenerating = false
 let retryAt = 0
 let isChild = false
 
-const FORMAT = `Each question must have exactly 4 choices and exactly one correct answer, and be answerable from the code. Keep questions and choices short; put identifiers in backticks.
+const FORMAT = `Each question must have exactly 4 choices and exactly one correct answer, and be answerable from the code. Keep questions and choices short; put identifiers in backticks. Describe things in plain words, not the code's internal jargon: say "the questions shown before any are generated", not "the seed questions".
 
 Reply with JSON only, no prose and no code fence:
 [{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "file": "<path of the file it is about, relative to the repo root>"}]`
