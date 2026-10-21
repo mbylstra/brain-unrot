@@ -133,20 +133,13 @@ test('inside the generating claude process the plugin stays quiet', async ($, on
   expect(opened).toEqual([])
 })
 
-test('"Absolutely no idea" offers a clarifying question, then reveals the answer and steps the difficulty down', async ($, on) => {
+test('"Absolutely no idea" reveals the answer and steps the difficulty down', async ($, on) => {
   const { clock, calls } = world(on, { 'skill:/repo': { difficulty: 3, streak: 2 } })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Difficulty 3 of 5/ })).toBeTruthy()
-
-  // The first press holds the answer back and offers a clarifying question
-  await ui.press({ key: 'no-idea' })
-  expect(await ui.find({ type: 'Text', text: /No worries — it was/ })).toBeFalsy()
-  expect(await ui.find({ type: 'Button', key: 'ask', text: /Ask a clarifying question/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'no-idea', text: /Show me the answer/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Difficulty 3 of 5/ })).toBeTruthy()
 
   await ui.press({ key: 'no-idea' })

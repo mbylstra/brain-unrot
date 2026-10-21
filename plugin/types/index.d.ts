@@ -24,8 +24,6 @@ export type Round = {
   draft?: string
   isThinking?: boolean
   issue?: string
-  // "Absolutely no idea" was pressed once: the answer waits while a clarifying question is offered
-  isStumped?: boolean
 }
 
 // An issue waiting to be rephrased and written to docs/issues/todo/, with the question it came up on

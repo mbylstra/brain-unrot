@@ -479,7 +479,7 @@ export const register: Register = on => {
       return frame(<Text dimColor>No question yet.</Text>)
     }
 
-    const { question, guess, chat, issue, isStumped } = current
+    const { question, guess, chat, issue } = current
     const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
 
     const choose = (i: number) => async () => {
@@ -490,14 +490,6 @@ export const register: Register = on => {
       await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
       // The pressed choice is gone; put the ring on Next so Enter moves on
       await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
-    }
-
-    // The first "no idea" offers a clarifying question; pressing it again (or in a discussion) reveals the answer
-    const giveUp = async () => {
-      if (isStumped || chat || !Input) return choose(NO_IDEA)()
-      debug($, `no idea ${question.id}: offering a clarifying question`)
-      await update($, round, r => (r ? { ...r, isStumped: true } : r))
-      await $.ui.focus({ requestId: PANE, key: 'ask' }).catch(() => undefined)
     }
 
     const ask = async () => {
@@ -555,13 +547,7 @@ export const register: Register = on => {
         {question.choices.map((c, i) => (
           <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${c}`} onPress={choose(i)} />
         ))}
-        <Button
-          key="no-idea"
-          plain
-          hotkey="5"
-          label={isStumped ? '5. Show me the answer' : '5. Absolutely no idea'}
-          onPress={giveUp}
-        />
+        <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
       </Box>
     )
 
@@ -620,7 +606,6 @@ export const register: Register = on => {
           {source}
           <Text bold>{question.prompt}</Text>
           {choices}
-          {isStumped ? <Text color="yellow">No idea? Ask a clarifying question first, or see the answer.</Text> : null}
           {Input ? <Button key="ask" plain hotkey="6" label="6. Ask a clarifying question" onPress={ask} /> : null}
           {reportButton}
         </Box>
