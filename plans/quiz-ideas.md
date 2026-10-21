@@ -18,9 +18,51 @@ How it works today:
 - The pane never takes the keyboard. You click it (or press ctrl+x, then
   Tab) to answer, and Esc returns to the chat. A green or grey border shows
   whether it's focused.
-- Right now the "quiz" is a placeholder: guess a number from 1 to 4.
 - The plugin writes `plugin/.debug.log` (gitignored) so Claude can see what
-  the pane did.
+  the pane did, including each question generation and its result.
+- The marketplace is a folder source, so every project the plugin is
+  installed in runs whatever branch is checked out in this repo.
+
+## Current state (MVP)
+
+Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
+
+- **The pane shows a question as soon as you submit a prompt.** It takes
+  the newest cached question at or below your level, or a seed question
+  when none is ready. Press 1–4 to answer, or 5 for "Absolutely no idea".
+  The pane then shows the answer, a one-line explanation and the file the
+  question came from, and focus moves to "Next question" (or press `n`).
+- **Questions come from the `claude` CLI**, hardcoded for now:
+  `claude -p <prompt> --model haiku --tools Read,Grep,Glob` run from the
+  repo root. A `$.clock.every` timer (every 3 seconds) runs one generation
+  at a time, so it outlives the hook that asked for it.
+  - Each file Claude reads (a `tool.call` hook on `Read`) gets a call for
+    2 questions about that file.
+  - When fewer than 5 cached questions are at or below your level, it asks
+    for 4 questions about the repo as a whole.
+  - Cached questions are sent along so it doesn't repeat them.
+  - After a failure it waits 60 seconds before trying again.
+- **The child process is kept quiet.** It runs with `BRAIN_UNROT_CHILD=1`,
+  which switches the plugin off there, and `--setting-sources user` so the
+  plugin's local-scope install isn't loaded.
+- **Questions are checked**: exactly 4 distinct choices and a valid answer
+  index, or the question is dropped. Choices are shuffled when shown.
+- **Storage** is `$.store`, per repo root: `pantry:<root>` holds up to 30
+  cached questions, newest first, each removed once shown; `skill:<root>`
+  holds your level and streak.
+- **Difficulty** is a 1–5 staircase starting at 1: 3 right in a row moves
+  up 1, a wrong answer moves down ½, and "Absolutely no idea" moves down 1.
+  Generation asks for your current level, with a one-line description of
+  each level, and tags each question with it. The footer shows the level
+  and how many questions are ready.
+- **Seeds**: 6 easy hand-written questions in `plugin/hooks/seeds.ts`.
+- **Tests**: `plugin/tests/quiz.test.tsx`, run with
+  `claude plugin test plugin`.
+
+Not built yet: a global (cross-project) profile, topics, spaced repetition,
+staleness checks, a cost budget, quoted-code checks, the fast lane for
+Claude's diff, and other LLM backends. The queue of files Claude read is
+lost when the plugin reloads.
 
 ## Ideas
 
@@ -30,6 +72,8 @@ seconds or several minutes, and every answer is a click.
 ### First to build
 
 1. **Static question bank** so there's always something to show instantly.
+   *Done in the MVP as 6 seed questions; generated questions now do most
+   of the work.*
 2. **Quiz on Claude's diff** (see *Specific lines of code*).
 3. **Predict Claude's next move** (see *Using LLMs effectively*).
 
@@ -147,7 +191,8 @@ never a concern:
 
 ### How the difficulty moves
 
-- **Start with a staircase.** Every question has a level from 1 to 10.
+- **Start with a staircase.** Every question has a level from 1 to 10
+  (the MVP uses 1 to 5, one staircase per project, no topics yet).
   3 right in a row moves you up one level; 1 wrong moves you down half a
   level. This is the classic 3-up/1-down staircase from psychophysics. It
   settles where you get about 80% right and needs 2 numbers per topic.
@@ -171,6 +216,8 @@ never a concern:
 
 - **Discount lucky guesses.** With 4 options, a random click is right 25% of
   the time. An "I don't know" button keeps guesses from inflating your level.
+  *In the MVP it's "Absolutely no idea", and it moves the level down a full
+  step, as a signal to make questions easier.*
 - **"Too easy" and "too hard" buttons**, applied as an immediate ±1 level.
 - **Knowledge decays over time.** Global levels drift down slowly when a
   topic goes unused. Codebase levels for an area drop when commits touch
@@ -184,7 +231,8 @@ never a concern:
 ### First to build
 
 The staircase, the `profile` / `project:` split, and the "I don't know"
-button.
+button. *The MVP has the staircase and the button, stored per project
+(`skill:<root>`); the global `profile` isn't built yet.*
 
 ## Question generation and caching
 
@@ -218,7 +266,7 @@ time and cached.
    is never empty.
 3. **A seed bank ships with the plugin.** About 50 hand-written easy
    questions make the very first run instant too, before any generation
-   has happened.
+   has happened. *The MVP has 6.*
 
 ### Refilling
 
@@ -254,17 +302,16 @@ Generated questions are cheap, but wrong ones destroy trust.
 
 ### Swapping providers
 
-Hide generation behind one interface, `generate(spec) → Question[]`. Ship a
-Haiku implementation first, add HTTP and CLI implementations later, and
-pick the provider in plugin settings.
+Hide generation behind one interface, `generate(spec) → Question[]`, and
+pick the provider in plugin settings. *The MVP is hardcoded to the `claude`
+CLI (`askClaude` in `register.tsx`); `$.model.complete` and HTTP providers
+can come later.*
 
 ### To check before building
 
-1. **Can async work outlive the hook that started it?** Hooks run on a
-   budget (`next.budget.remainingMs`). Confirm a refill started from
-   `prompt.submit` or `tool.call` keeps running after the hook returns, or
-   else schedule it with `$.clock.after`. The `plugin-authoring` skill
-   should answer this.
+1. ~~**Can async work outlive the hook that started it?**~~ Settled: the
+   plugin docs say work meant to outlive a hook belongs on a timer started
+   in `session.start`, so the MVP runs generation from `$.clock.every`.
 2. **`$.model.fork` is tempting for the fast lane.** It reuses the main
    conversation's cached prefix, so it already knows what Claude is doing,
    but it runs on the main thread's model (Opus), not Haiku. Try it for
