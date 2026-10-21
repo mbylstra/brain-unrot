@@ -10,8 +10,13 @@ export type Question = {
   level?: number
 }
 
-// `guess` is a choice index, -1 for "Absolutely no idea", null before answering
-export type Round = { question: Question; guess: number | null }
+// One turn of a clarifying discussion about the question
+export type Message = { from: 'you' | 'claude'; text: string }
+
+// `guess` is a choice index, -1 for "Absolutely no idea", null before answering.
+// `chat` is set once you ask a clarifying question, `draft` holds what you're typing,
+// and `isThinking` is set while Claude replies.
+export type Round = { question: Question; guess: number | null; chat?: Message[]; draft?: string; isThinking?: boolean }
 
 export type Skill = { level: number; streak: number }
 

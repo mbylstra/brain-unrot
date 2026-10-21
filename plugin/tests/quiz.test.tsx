@@ -26,6 +26,8 @@ const REPLY = JSON.stringify([
   { prompt: 'Broken question', choices: ['only two', 'choices'], answer: 0 },
 ])
 
+const CHAT_REPLY = 'It asks what the function hands back when there is no file to read.'
+
 const FILLER = { prompt: 'Filler?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: '', file: 'x.ts' }
 
 // Stands in for the engine; returns the argv of each claude CLI call
@@ -46,7 +48,8 @@ function world(on: On, store: Record<string, unknown> = {}, env: Record<string, 
   const calls: { argv: readonly string[]; env?: Readonly<Record<string, string>> }[] = []
   on('process.run', (_, e) => {
     calls.push({ argv: e.argv, env: e.init?.env })
-    return { value: { exitCode: 0, stdout: REPLY, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const stdout = e.argv[2]?.includes('clarifying question') ? CHAT_REPLY : REPLY
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return { clock, calls, opened }
 }
@@ -118,5 +121,46 @@ test('"Absolutely no idea" reveals the answer and steps the level down', async (
   // The next questions are asked for at the new level
   await clock.advance(3000)
   expect(calls[0]!.argv[2]).toContain('level 2 of 5')
+  await ui.unmount()
+})
+
+test('a clarifying question opens a discussion, and you can then answer or skip', async ($, on) => {
+  const known = { ...FILLER, id: 'known', choices: ['right one', 'b', 'c', 'd'], level: 1 }
+  const { clock, calls } = world(on, { 'skill:/repo': { level: 2, streak: 2 }, 'pantry:/repo': [known] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await ui.press({ key: 'ask' })
+  await ui.input({ key: 'ask', text: 'What does', kind: 'change' })
+  expect((await ui.find({ type: 'Input', key: 'ask' }))?.text).toBe('What does')
+  await ui.input({ key: 'ask', text: 'What does "missing" mean here?' })
+  expect((await ui.find({ type: 'Input', key: 'ask' }))?.text).toBe('')
+  expect(await ui.find({ type: 'Text', text: /You: What does "missing" mean here\?/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Claude is thinking/ })).toBeTruthy()
+
+  // The chat timer asks claude, with the question and the discussion so far
+  await clock.advance(1000)
+  const chat = calls.find(c => c.argv[2]?.includes('clarifying question'))!
+  expect(chat.argv[2]).toContain('Never reveal it')
+  expect(chat.argv[2]).toContain('Developer: What does "missing" mean here?')
+  expect(await ui.find({ type: 'Markdown', text: /no file to read/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Claude is thinking/ })).toBeFalsy()
+
+  // Answering after a discussion reveals the answer; a right one doesn't move the level
+  const right = await ui.find({ type: 'Button', text: /right one/ })
+  await ui.press({ key: right!.key! })
+  expect(await ui.find({ type: 'Text', text: /Correct!/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Level 2 of 5/ })).toBeTruthy()
+  await ui.press({ key: 'next' })
+
+  // Skipping moves straight on to the next question, level unchanged
+  await ui.press({ key: 'ask' })
+  expect(await ui.find({ key: 'skip' })).toBeTruthy()
+  await ui.press({ key: 'skip' })
+  expect(await ui.find({ key: 'skip' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'ask', text: /Ask a clarifying question/ })).toBeTruthy()
   await ui.unmount()
 })

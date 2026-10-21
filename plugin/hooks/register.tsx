@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Question, Round, Skill } from '../types'
+import type { Message, Question, Round, Skill } from '../types'
 import { SEEDS } from './seeds'
 
 const PANE = 'brain-unrot'
@@ -10,6 +10,8 @@ const PANTRY_MAX = 30
 // Below this many ready questions, generate some about the repo as a whole
 const PANTRY_LOW = 5
 const TICK_MS = 3000
+// How often to check for a clarifying question waiting for a reply
+const CHAT_TICK_MS = 1000
 const CLI_TIMEOUT_MS = 5 * 60_000
 const RETRY_MS = 60_000
 const CHILD_ENV = 'BRAIN_UNROT_CHILD'
@@ -91,14 +93,18 @@ async function loadSkill($: EngineInterface): Promise<Skill> {
   return typeof stored?.level === 'number' ? stored : { level: LEVEL_MIN, streak: 0 }
 }
 
-function stepped(s: Skill, outcome: 'right' | 'wrong' | 'no-idea'): Skill {
+// `helped` is a right answer after a clarifying discussion: it doesn't move the level
+type Outcome = 'right' | 'wrong' | 'no-idea' | 'helped'
+
+function stepped(s: Skill, outcome: Outcome): Skill {
   const clamp = (n: number) => Math.min(LEVEL_MAX, Math.max(LEVEL_MIN, n))
   if (outcome === 'no-idea') return { level: clamp(s.level - 1), streak: 0 }
   if (outcome === 'wrong') return { level: clamp(s.level - 0.5), streak: 0 }
+  if (outcome === 'helped') return s
   return s.streak + 1 >= STREAK_UP ? { level: clamp(s.level + 1), streak: 0 } : { ...s, streak: s.streak + 1 }
 }
 
-async function record($: EngineInterface, outcome: 'right' | 'wrong' | 'no-idea') {
+async function record($: EngineInterface, outcome: Outcome) {
   const next = stepped(await loadSkill($), outcome)
   await $.store.set(await skillKey($), next)
   await update($, skill, () => next)
@@ -214,6 +220,47 @@ async function askClaude($: EngineInterface, prompt: string, root: string): Prom
   return stdout
 }
 
+const CHAT_PROMPT = (q: Question, chat: Message[]) => `You help a developer with a multiple-choice quiz question about the codebase in the current directory. They've asked a clarifying question before choosing an answer.
+
+The question${q.file ? ` (about ${q.file})` : ''}:
+${q.prompt}
+
+The choices:
+${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses, and the surrounding code, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.
+
+The discussion so far:
+${chat.map(m => `${m.from === 'you' ? 'Developer' : 'You'}: ${m.text}`).join('\n\n')}
+
+Reply to the developer's last message in a few short sentences of plain text. Put identifiers in backticks.`
+
+// A clarifying question waiting for a reply; the reply lands only if the round is still the same
+let isChatting = false
+
+async function discuss($: EngineInterface) {
+  if (isChatting) return
+  const current = await read($, round)
+  const chat = current?.chat
+  if (!current || current.guess !== null || !chat || chat.at(-1)?.from !== 'you') return
+
+  isChatting = true
+  const { question } = current
+  const same = (r: Round | null): r is Round => r?.question.id === question.id && r.guess === null && r.chat !== undefined
+  const reply = (text: string) =>
+    update($, round, r => (same(r) ? { ...r, chat: [...chat, { from: 'claude', text } as Message], isThinking: false } : r))
+  try {
+    debug($, `chat ${question.id}: asking claude`)
+    const text = (await askClaude($, CHAT_PROMPT(question, chat), await $.session.root())).trim()
+    await reply(text || '(no reply)')
+  } catch (err) {
+    debug($, `chat ${question.id}: ${String(err)}`)
+    await reply('Sorry, that failed. Try asking again.')
+  } finally {
+    isChatting = false
+  }
+}
+
 async function generate($: EngineInterface) {
   if (isGenerating || Date.now() < retryAt) return
   const pantry = await loadPantry($)
@@ -254,6 +301,7 @@ export const register: Register = on => {
     const result = await next(e)
     // Generation runs on a timer so it outlives the hook that queued the file
     $.clock.every(TICK_MS, () => generate($))
+    $.clock.every(CHAT_TICK_MS, () => discuss($))
     await update($, ready, () => 0)
     void loadPantry($).then(p => update($, ready, () => p.length))
     void loadSkill($).then(s => update($, skill, () => s))
@@ -286,7 +334,10 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = elements
+    // Asking needs a text field, which not every surface has (mobile)
+    const Input = 'Input' in elements ? elements.Input : undefined
     const current = await read($, round)
     const readyCount = await read($, ready)
     const { level } = await read($, skill)
@@ -310,15 +361,77 @@ export const register: Register = on => {
       return frame(<Text dimColor>No question yet.</Text>)
     }
 
-    const { question, guess } = current
+    const { question, guess, chat } = current
     const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
 
     const choose = (i: number) => async () => {
       debug($, `guess: ${i} (answer ${question.answer})`)
       await update($, round, r => (r ? { ...r, guess: i } : r))
-      await record($, i === NO_IDEA ? 'no-idea' : i === question.answer ? 'right' : 'wrong')
+      const isRight = i === question.answer
+      const wasHelped = chat?.some(m => m.from === 'you') ?? false
+      await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
       // The pressed choice is gone; put the ring on Next so Enter moves on
       await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
+    }
+
+    const ask = async () => {
+      debug($, `chat ${question.id}: opened`)
+      await update($, round, r => (r ? { ...r, chat: [] } : r))
+      await $.ui.focus({ requestId: PANE, key: 'ask' }).catch(() => undefined)
+    }
+
+    // Kept in the round so a redraw (a reply landing, the ready count) doesn't lose it
+    const type = async (text: string) => {
+      await update($, round, r => (r?.chat ? { ...r, draft: text } : r))
+    }
+
+    const send = async (text: string) => {
+      if (text.trim() === '') return
+      // The chat timer picks this up and asks claude
+      const message: Message = { from: 'you', text: text.trim() }
+      await update($, round, r => (r?.chat && !r.isThinking ? { ...r, chat: [...r.chat, message], draft: '', isThinking: true } : r))
+    }
+
+    const skip = async () => {
+      debug($, `skip: ${question.id}`)
+      await newRound($)
+    }
+
+    const choices = (
+      <Box flexDirection="column">
+        {question.choices.map((c, i) => (
+          <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${c}`} onPress={choose(i)} />
+        ))}
+        <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
+      </Box>
+    )
+
+    if (guess === null && chat && Input) {
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          {source}
+          <Text bold>{question.prompt}</Text>
+          {choices}
+          {chat.map((m, i) =>
+            m.from === 'you' ? (
+              <Text key={`msg-${i}`} color="cyan">You: {m.text}</Text>
+            ) : (
+              <Markdown key={`msg-${i}`} text={m.text} />
+            )
+          )}
+          {current.isThinking ? <Text dimColor>Claude is thinking…</Text> : null}
+          <Input
+            key="ask"
+            placeholder={chat.length === 0 ? 'Ask about the question…' : 'Ask a follow-up…'}
+            submitLabel="ask"
+            value={current.draft ?? ''}
+            onInput={type}
+            onSubmit={send}
+          />
+          <Button key="skip" plain hotkey="s" label="Skip this question" onPress={skip} />
+          <Text dimColor>Up or Down leaves the box: pick a choice to answer, or skip.</Text>
+        </Box>
+      )
     }
 
     if (guess === null) {
@@ -326,12 +439,8 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {source}
           <Text bold>{question.prompt}</Text>
-          <Box flexDirection="column">
-            {question.choices.map((c, i) => (
-              <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${c}`} onPress={choose(i)} />
-            ))}
-            <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
-          </Box>
+          {choices}
+          {Input ? <Button key="ask" plain hotkey="6" label="6. Ask a clarifying question" onPress={ask} /> : null}
         </Box>
       )
     }

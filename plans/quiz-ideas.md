@@ -32,6 +32,14 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   when none is ready. Press 1–4 to answer, or 5 for "Absolutely no idea".
   The pane then shows the answer, a one-line explanation and the file the
   question came from, and focus moves to "Next question" (or press `n`).
+- **Press 6 to ask a clarifying question.** A text box opens under the
+  choices for a discussion with Claude, which is told the right answer but
+  not to reveal it or rule choices in or out. The reply comes from a
+  1-second `$.clock.every` timer that runs the same `claude` CLI call, and
+  it's dropped if you've moved on. Up/Down leave the box: pick a choice to
+  answer, or "Skip this question" (`s`) to move on without changing your
+  level. A right answer after a discussion doesn't move your level either;
+  a wrong one still steps it down. Hidden on mobile, which has no text box.
 - **Questions come from the `claude` CLI**, hardcoded for now:
   `claude -p <prompt> --model haiku --tools Read,Grep,Glob` run from the
   repo root. A `$.clock.every` timer (every 3 seconds) runs one generation
