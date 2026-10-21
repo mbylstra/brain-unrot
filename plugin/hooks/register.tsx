@@ -21,6 +21,8 @@ const ISSUES_DIR = 'docs/issues/todo'
 const RETRY_MS = 60_000
 // Questions read the code and its git history: Bash is limited to reading git history
 const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
+// The quiz chat may also edit the issues folder, e.g. to update or file an issue the developer asks for
+const CHAT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, `Edit(${ISSUES_DIR}/**)`] }
 // The guess recorded for "Absolutely no idea"
 const NO_IDEA = -1
 const DIFFICULTY_MIN = 1
@@ -277,6 +279,8 @@ ${
 The discussion so far:
 ${chat.map(m => `${m.from === 'you' ? 'Developer' : 'You'}: ${m.text}`).join('\n\n')}
 
+If they ask you to file or change an issue, you may edit files in \`${ISSUES_DIR}\` (one markdown file per issue), and nothing else.
+
 Reply to the developer's last message in a few short sentences of plain text. Put identifiers in backticks.`
 
 // The tidbit keys: there's no right answer, so they record a reaction
@@ -314,7 +318,7 @@ async function discuss($: EngineInterface) {
     const text =
       current.kind === 'tidbit'
         ? await askAboutTidbit($, current.tidbit, chat, root)
-        : (await askClaude($, CHAT_PROMPT(current.question, chat, current.guess), { ...CODE, cwd: root })).text
+        : (await askClaude($, CHAT_PROMPT(current.question, chat, current.guess), { ...CHAT, cwd: root })).text
     await reply(text.trim() || '(no reply)')
   } catch (err) {
     debug($, `chat ${id}: ${String(err)}`)
