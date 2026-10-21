@@ -12,7 +12,7 @@ const PANTRY_LOW = 5
 const TICK_MS = 3000
 // How often to check for a clarifying question waiting for a reply, or an issue to file
 const CHAT_TICK_MS = 1000
-const ISSUES_DIR = 'docs/issues'
+const ISSUES_DIR = 'docs/issues/todo'
 const CLI_TIMEOUT_MS = 5 * 60_000
 const RETRY_MS = 60_000
 const CHILD_ENV = 'BRAIN_UNROT_CHILD'

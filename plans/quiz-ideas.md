@@ -44,7 +44,7 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   answering (questions often expose a confusing name or a bug). You
   describe it in a text box; a 1-second timer asks the `claude` CLI to
   rephrase it as a title and body, and the plugin writes
-  `docs/issues/<date>-<slug>.md` under the repo root, with the quiz
+  `docs/issues/todo/<date>-<slug>.md` under the repo root, with the quiz
   question and your original words appended. If the rephrasing fails it
   files your words as written. The write happens even if you've moved on,
   the footer shows where it went, and filing never touches your level.

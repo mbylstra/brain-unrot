@@ -180,7 +180,7 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   await ui.unmount()
 })
 
-test('an issue you describe is rephrased and written to docs/issues', async ($, on) => {
+test('an issue you describe is rephrased and written to docs/issues/todo', async ($, on) => {
   const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', file: 'src/config.ts', level: 1 }
   const { clock, calls, written } = world(on, { 'skill:/repo': { level: 2, streak: 2 }, 'pantry:/repo': [known] })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -211,12 +211,12 @@ test('an issue you describe is rephrased and written to docs/issues', async ($, 
 
   expect(written).toHaveLength(1)
   const [issue] = written
-  expect(issue!.path).toMatch(/^\/repo\/docs\/issues\/\d{4}-\d{2}-\d{2}-rename-x-in-loadconfig-to-something-clearer\.md$/)
+  expect(issue!.path).toMatch(/^\/repo\/docs\/issues\/todo\/\d{4}-\d{2}-\d{2}-rename-x-in-loadconfig-to-something-clearer\.md$/)
   expect(issue!.text).toContain('# Rename `x` in loadConfig/to something clearer')
   expect(issue!.text).toContain('Call it `config`.')
   expect(issue!.text).toContain('> x is a terrible name')
   expect(issue!.text).toContain('about `src/config.ts`')
-  expect(await ui.find({ type: 'Text', text: /Filed docs\/issues\// })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Filed docs\/issues\/todo\// })).toBeTruthy()
 
   // Filing doesn't move the level, and a second issue with the same title gets its own file
   expect((await ui.find({ type: 'Text', text: /Level \d of 5/ }))?.text).toBe(levelBefore)

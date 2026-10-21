@@ -26,7 +26,7 @@ export type Round = {
   issue?: string
 }
 
-// An issue waiting to be rephrased and written to docs/issues/, with the question it came up on
+// An issue waiting to be rephrased and written to docs/issues/todo/, with the question it came up on
 export type Issue = { text: string; question: Question }
 
 export type Skill = { level: number; streak: number }
