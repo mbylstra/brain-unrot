@@ -28,6 +28,11 @@ const REPLY = JSON.stringify([
 
 const CHAT_REPLY = 'It asks what the function hands back when there is no file to read.'
 
+const ISSUE_REPLY = JSON.stringify({
+  title: 'Rename `x` in loadConfig/to something clearer',
+  body: 'In `src/config.ts`, `loadConfig` names its result `x`. Call it `config`.',
+})
+
 const FILLER = { prompt: 'Filler?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: '', file: 'x.ts' }
 
 // Stands in for the engine; returns the argv of each claude CLI call
@@ -44,14 +49,24 @@ function world(on: On, store: Record<string, unknown> = {}, env: Record<string, 
   })
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('tool.call', () => ({ result: {} }))
-  on('fs.write', () => ({ value: undefined }))
+  const written: { path: string; text: string }[] = []
+  on('fs.write', (_, e) => {
+    if (!e.path.endsWith('.debug.log')) written.push(e)
+    return { value: undefined }
+  })
+  on('fs.exists', (_, e) => ({ value: written.some(w => w.path === e.path) }))
   const calls: { argv: readonly string[]; env?: Readonly<Record<string, string>> }[] = []
   on('process.run', (_, e) => {
     calls.push({ argv: e.argv, env: e.init?.env })
-    const stdout = e.argv[2]?.includes('clarifying question') ? CHAT_REPLY : REPLY
+    const prompt = e.argv[2] ?? ''
+    const stdout = prompt.includes('clarifying question')
+      ? CHAT_REPLY
+      : prompt.includes('Rewrite their note')
+        ? ISSUE_REPLY
+        : REPLY
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { clock, calls, opened }
+  return { clock, calls, opened, written }
 }
 
 test('a warm-up question shows at once, and the pantry fills with repo questions', async ($, on) => {
@@ -162,5 +177,53 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   await ui.press({ key: 'skip' })
   expect(await ui.find({ key: 'skip' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ask', text: /Ask a clarifying question/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('an issue you describe is rephrased and written to docs/issues', async ($, on) => {
+  const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', file: 'src/config.ts', level: 1 }
+  const { clock, calls, written } = world(on, { 'skill:/repo': { level: 2, streak: 2 }, 'pantry:/repo': [known] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  // Cancelling leaves the round as it was
+  await ui.press({ key: 'report' })
+  expect(await ui.find({ type: 'Input', key: 'issue' })).toBeTruthy()
+  await ui.press({ key: 'cancel-issue' })
+  expect(await ui.find({ type: 'Input', key: 'issue' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'ask' })).toBeTruthy()
+
+  // Answer first: the reveal is where a bad name usually shows up
+  await ui.press({ key: 'choice-0' })
+  const levelBefore = (await ui.find({ type: 'Text', text: /Level \d of 5/ }))?.text
+  await ui.press({ key: 'report' })
+  await ui.input({ key: 'issue', text: 'x is a terrible name' })
+  expect(await ui.find({ type: 'Text', text: /Filing the issue/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'next' })).toBeTruthy()
+
+  await clock.advance(1000)
+  const ask = calls.find(c => c.argv[2]?.includes('Rewrite their note'))!
+  expect(ask.argv[2]).toContain('x is a terrible name')
+  expect(ask.argv[2]).toContain('What is `x` in loadConfig?')
+
+  expect(written).toHaveLength(1)
+  const [issue] = written
+  expect(issue!.path).toMatch(/^\/repo\/docs\/issues\/\d{4}-\d{2}-\d{2}-rename-x-in-loadconfig-to-something-clearer\.md$/)
+  expect(issue!.text).toContain('# Rename `x` in loadConfig/to something clearer')
+  expect(issue!.text).toContain('Call it `config`.')
+  expect(issue!.text).toContain('> x is a terrible name')
+  expect(issue!.text).toContain('about `src/config.ts`')
+  expect(await ui.find({ type: 'Text', text: /Filed docs\/issues\// })).toBeTruthy()
+
+  // Filing doesn't move the level, and a second issue with the same title gets its own file
+  expect((await ui.find({ type: 'Text', text: /Level \d of 5/ }))?.text).toBe(levelBefore)
+  await ui.press({ key: 'report' })
+  await ui.input({ key: 'issue', text: 'still a terrible name' })
+  await clock.advance(1000)
+  expect(written).toHaveLength(2)
+  expect(written[1]!.path).toMatch(/clearer-2\.md$/)
   await ui.unmount()
 })

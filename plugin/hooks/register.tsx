@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Message, Question, Round, Skill } from '../types'
+import type { Issue, Message, Question, Round, Skill } from '../types'
 import { SEEDS } from './seeds'
 
 const PANE = 'brain-unrot'
@@ -10,8 +10,9 @@ const PANTRY_MAX = 30
 // Below this many ready questions, generate some about the repo as a whole
 const PANTRY_LOW = 5
 const TICK_MS = 3000
-// How often to check for a clarifying question waiting for a reply
+// How often to check for a clarifying question waiting for a reply, or an issue to file
 const CHAT_TICK_MS = 1000
+const ISSUES_DIR = 'docs/issues'
 const CLI_TIMEOUT_MS = 5 * 60_000
 const RETRY_MS = 60_000
 const CHILD_ENV = 'BRAIN_UNROT_CHILD'
@@ -33,6 +34,8 @@ const LEVELS: Record<number, string> = {
 const round = atom({ plugin: 'brain-unrot', key: 'round' } as const, null as Round | null)
 const ready = atom({ plugin: 'brain-unrot', key: 'ready' } as const, 0)
 const skill = atom({ plugin: 'brain-unrot', key: 'skill' } as const, { level: LEVEL_MIN, streak: 0 } as Skill)
+// A line in the footer about the last issue filed, e.g. where it was written
+const notice = atom({ plugin: 'brain-unrot', key: 'notice' } as const, null as string | null)
 
 // Debug trail Claude can read back (the transcript isn't visible to it)
 const trail: string[] = []
@@ -261,6 +264,110 @@ async function discuss($: EngineInterface) {
   }
 }
 
+const ISSUE_PROMPT = (issue: Issue) => {
+  const q = issue.question
+  return `A developer was answering a multiple-choice quiz question about the codebase in the current directory and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
+
+The question${q.file ? ` (about ${q.file})` : ''}:
+${q.prompt}
+
+The choices:
+${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''}
+
+Their note:
+${issue.text}
+
+You may read the code to name the file, function or variable precisely. Rephrase only what they raised: don't add other problems or fixes of your own. If the quiz question itself is wrong or misleading, say so.
+
+Reply with JSON only, no prose and no code fence:
+{"title": "<a short title, under 70 characters>", "body": "<markdown: what the problem is, where it is (file and identifier), and the suggested change if they gave one>"}`
+}
+
+function parseIssue(text: string): { title: string; body: string } | undefined {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end < start) return undefined
+  try {
+    const raw = JSON.parse(text.slice(start, end + 1))
+    return typeof raw?.title === 'string' && raw.title.trim() !== '' && typeof raw.body === 'string'
+      ? { title: raw.title.trim(), body: raw.body.trim() }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The title comes from the model, so keep only safe characters for the file name
+const slug = (title: string) =>
+  title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 50)
+    .replace(/-+$/, '') || 'issue'
+
+async function freePath($: EngineInterface, dir: string, name: string): Promise<string> {
+  for (let n = 1; ; n++) {
+    const path = `${dir}/${name}${n === 1 ? '' : `-${n}`}.md`
+    if (!(await $.fs.exists(path))) return path
+  }
+}
+
+// Issues you've described, waiting to be rephrased and written; they outlive the round
+const issues: Issue[] = []
+let isFiling = false
+
+async function fileIssue($: EngineInterface) {
+  if (isFiling) return
+  const issue = issues.shift()
+  if (!issue) return
+
+  isFiling = true
+  const { question } = issue
+  const root = await $.session.root()
+  try {
+    let rephrased: { title: string; body: string } | undefined
+    try {
+      debug($, `issue ${question.id}: asking claude`)
+      rephrased = parseIssue(await askClaude($, ISSUE_PROMPT(issue), root))
+      if (!rephrased) debug($, `issue ${question.id}: unparsed reply`)
+    } catch (err) {
+      debug($, `issue ${question.id}: ${String(err)}`)
+    }
+    // Never lose what you typed: without a rephrasing, file it as written
+    const title = rephrased?.title ?? issue.text.split('\n')[0]!.slice(0, 70)
+    const date = new Date().toISOString().slice(0, 10)
+    const path = await freePath($, `${root}/${ISSUES_DIR}`, `${date}-${slug(title)}`)
+    const text = [
+      `# ${title}`,
+      '',
+      rephrased?.body ?? issue.text,
+      '',
+      '## Context',
+      '',
+      `Raised while answering a Brain Unrot quiz question${question.file ? ` about \`${question.file}\`` : ''}:`,
+      '',
+      `> ${question.prompt}`,
+      '',
+      'Original note:',
+      '',
+      ...issue.text.split('\n').map(line => `> ${line}`),
+      '',
+    ].join('\n')
+    await $.fs.write(path, text)
+    const shown = path.slice(root.length + 1)
+    debug($, `issue ${question.id}: wrote ${shown}`)
+    await update($, notice, () => `Filed ${shown}`)
+  } catch (err) {
+    debug($, `issue ${question.id}: ${String(err)}`)
+    await update($, notice, () => 'Filing the issue failed; see .debug.log')
+  } finally {
+    isFiling = false
+  }
+}
+
 async function generate($: EngineInterface) {
   if (isGenerating || Date.now() < retryAt) return
   const pantry = await loadPantry($)
@@ -302,6 +409,7 @@ export const register: Register = on => {
     // Generation runs on a timer so it outlives the hook that queued the file
     $.clock.every(TICK_MS, () => generate($))
     $.clock.every(CHAT_TICK_MS, () => discuss($))
+    $.clock.every(CHAT_TICK_MS, () => fileIssue($))
     await update($, ready, () => 0)
     void loadPantry($).then(p => update($, ready, () => p.length))
     void loadSkill($).then(s => update($, skill, () => s))
@@ -341,6 +449,7 @@ export const register: Register = on => {
     const current = await read($, round)
     const readyCount = await read($, ready)
     const { level } = await read($, skill)
+    const status = await read($, notice)
 
     const isFocused = e.props.isFocused
     const frame = (body: JSX.Element) => (
@@ -351,6 +460,7 @@ export const register: Register = on => {
           <Text color="yellow">○ Click here to answer (or press ctrl+x, then Tab)</Text>
         )}
         {body}
+        {status ? <Text dimColor>{status}</Text> : null}
         <Text dimColor>
           Level {Math.floor(level)} of {LEVEL_MAX} · {readyCount} generated questions ready
         </Text>
@@ -361,7 +471,7 @@ export const register: Register = on => {
       return frame(<Text dimColor>No question yet.</Text>)
     }
 
-    const { question, guess, chat } = current
+    const { question, guess, chat, issue } = current
     const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
 
     const choose = (i: number) => async () => {
@@ -392,6 +502,33 @@ export const register: Register = on => {
       await update($, round, r => (r?.chat && !r.isThinking ? { ...r, chat: [...r.chat, message], draft: '', isThinking: true } : r))
     }
 
+    // The issue box sits on top of the round; closing it leaves the round as it was
+    const report = async () => {
+      debug($, `issue ${question.id}: opened`)
+      await update($, round, r => (r ? { ...r, issue: '' } : r))
+      await $.ui.focus({ requestId: PANE, key: 'issue' }).catch(() => undefined)
+    }
+
+    const describe = async (text: string) => {
+      await update($, round, r => (r?.issue !== undefined ? { ...r, issue: text } : r))
+    }
+
+    const closeIssue = async () => {
+      await update($, round, r => (r ? { ...r, issue: undefined } : r))
+    }
+
+    const submitIssue = async (text: string) => {
+      if (text.trim() === '') return
+      // The issue timer picks this up, asks claude to rephrase it and writes the file
+      issues.push({ text: text.trim(), question })
+      await update($, notice, () => 'Filing the issue…')
+      await closeIssue()
+    }
+
+    const reportButton = Input ? (
+      <Button key="report" plain hotkey="7" label="7. Suggest improvement or file a bug" onPress={report} />
+    ) : null
+
     const skip = async () => {
       debug($, `skip: ${question.id}`)
       await newRound($)
@@ -405,6 +542,26 @@ export const register: Register = on => {
         <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
       </Box>
     )
+
+    if (issue !== undefined && Input) {
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          {source}
+          <Text bold>{question.prompt}</Text>
+          <Text>What could be better? A confusing name, a bug, a wrong question…</Text>
+          <Input
+            key="issue"
+            placeholder="Describe the issue…"
+            submitLabel="file"
+            value={issue}
+            onInput={describe}
+            onSubmit={submitIssue}
+          />
+          <Button key="cancel-issue" plain hotkey="c" label="Cancel" onPress={closeIssue} />
+          <Text dimColor>Claude rewrites it and saves it to {ISSUES_DIR}/.</Text>
+        </Box>
+      )
+    }
 
     if (guess === null && chat && Input) {
       return frame(
@@ -429,6 +586,7 @@ export const register: Register = on => {
             onSubmit={send}
           />
           <Button key="skip" plain hotkey="s" label="Skip this question" onPress={skip} />
+          {reportButton}
           <Text dimColor>Up or Down leaves the box: pick a choice to answer, or skip.</Text>
         </Box>
       )
@@ -441,6 +599,7 @@ export const register: Register = on => {
           <Text bold>{question.prompt}</Text>
           {choices}
           {Input ? <Button key="ask" plain hotkey="6" label="6. Ask a clarifying question" onPress={ask} /> : null}
+          {reportButton}
         </Box>
       )
     }
@@ -463,6 +622,7 @@ export const register: Register = on => {
         {verdict}
         {question.explanation ? <Text>{question.explanation}</Text> : null}
         <Button key="next" hotkey="n" label="Next question" autoFocus onPress={() => newRound($)} />
+        {reportButton}
       </Box>
     )
   })

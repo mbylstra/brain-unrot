@@ -40,6 +40,15 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   answer, or "Skip this question" (`s`) to move on without changing your
   level. A right answer after a discussion doesn't move your level either;
   a wrong one still steps it down. Hidden on mobile, which has no text box.
+- **Press 7 to suggest an improvement or file a bug**, before or after
+  answering (questions often expose a confusing name or a bug). You
+  describe it in a text box; a 1-second timer asks the `claude` CLI to
+  rephrase it as a title and body, and the plugin writes
+  `docs/issues/<date>-<slug>.md` under the repo root, with the quiz
+  question and your original words appended. If the rephrasing fails it
+  files your words as written. The write happens even if you've moved on,
+  the footer shows where it went, and filing never touches your level.
+  Hidden on mobile too.
 - **Questions come from the `claude` CLI**, hardcoded for now:
   `claude -p <prompt> --model haiku --tools Read,Grep,Glob` run from the
   repo root. A `$.clock.every` timer (every 3 seconds) runs one generation
