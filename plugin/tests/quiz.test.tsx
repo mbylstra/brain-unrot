@@ -483,7 +483,7 @@ test('new CHANGELOG releases become tidbits, grounded in the line they quote', a
   const digest = calls.find(c => c.argv[2]?.includes('release notes'))!
   expect(digest.argv[2]).toContain('Added `/effort` to choose how hard Claude thinks')
   expect(digest.argv[2]).not.toContain('long ago')
-  expect(digest.argv[digest.argv.indexOf('--model') + 1]).toBe('opus')
+  expect(digest.argv[digest.argv.indexOf('--model') + 1]).toBe('sonnet')
   expect(digest.argv[digest.argv.indexOf('--tools') + 1]).toBe('')
   expect(digest.argv).toContain('--max-budget-usd')
 
@@ -643,7 +643,7 @@ test('you can ask about a tidbit, with the web, and file a bug about it', async 
   expect(chat.argv[2]).toContain('they run Claude Code 2.1.305')
   expect(chat.argv[2]).toContain('Developer: Does this still work?')
   expect(chat.argv[chat.argv.indexOf('--tools') + 1]).toBe('WebSearch,WebFetch,Read,Grep,Glob')
-  expect(chat.argv[chat.argv.indexOf('--model') + 1]).toBe('opus')
+  expect(chat.argv[chat.argv.indexOf('--model') + 1]).toBe('sonnet')
   expect(await ui.find({ type: 'Markdown', text: /no file to read/ })).toBeTruthy()
   // Asking turns the topic up
   expect((store['tidbits:prefs'] as Prefs).weights['context management']).toBe(1.25)

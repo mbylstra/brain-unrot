@@ -4,8 +4,8 @@ import type { Message, Prefs, Reaction, Tidbit, Topic } from '../types'
 import { askClaude, debug, random } from './claude'
 import { SEED_TIDBITS } from './seeds'
 
-// Opus for everything tidbit-related: Haiku took the first search result at face value
-export const TIDBIT_MODEL = 'opus'
+// Sonnet for everything tidbit-related: Haiku took the first search result at face value
+export const TIDBIT_MODEL = 'sonnet'
 export const CHANGELOG_URL = 'https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md'
 const CHANGELOG_PAGE = 'https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md'
 export const RELEASES_URL = 'https://api.github.com/repos/anthropics/claude-code/releases?per_page=100'

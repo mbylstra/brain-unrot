@@ -93,7 +93,7 @@ evaluation habits.
   thing: context management, prompting, agents and subagents, testing and
   verification, cost and model choice, security, IDE and CLI workflow.
   Pick the next topic weighted by the reactions.
-- **Model**: Opus by default, for research and for writing tidbits, and
+- **Model**: Sonnet by default, for research and for writing tidbits, and
   for follow-up chat about them. Haiku took the first search result at
   face value in the test above. The model is one constant, so it's easy to
   change later.
@@ -137,7 +137,7 @@ The "check quoted code" idea in quiz-ideas.md, applied to the web:
 - **Cost.** No daily cap. Each call still passes `--max-budget-usd` as a
   guard against a runaway call, and `total_cost_usd` goes in the debug
   log. For scale: one WebSearch round trip on Haiku cost about $0.02, and
-  Opus costs several times that. Research runs about once a day.
+  Sonnet costs a few times that. Research runs about once a day.
 - **Seed tidbits.** About 10 hand-written evergreen ones (`/clear` vs
   `/compact`, CLAUDE.md, plan mode, asking for tests first), so the very
   first run isn't empty while research runs.
@@ -186,7 +186,7 @@ as-is, with these changes:
 1. **Mode**: a random mix. Each new round is a quiz question or a tidbit at
    random (about 1 in 3 tidbits, when one is ready). There's no mode key
    or setting.
-2. **Model**: Opus by default for everything tidbit-related.
+2. **Model**: Sonnet by default for everything tidbit-related.
 3. **Budget**: no daily cap; only a per-call `--max-budget-usd` guard.
 4. **Sources**: lane 1 is Claude Code only (the CHANGELOG). Lane 2 still
    researches general techniques on the open web.
