@@ -479,7 +479,7 @@ export const register: Register = on => {
         {body}
         {status ? <Text dimColor>{status}</Text> : null}
         <Text dimColor>
-          Difficulty {Math.floor(difficulty)} of {DIFFICULTY_MAX} · {readyCount} generated questions ready
+          Difficulty {Math.floor(difficulty)} out of {DIFFICULTY_MAX} · {readyCount} generated questions ready
         </Text>
       </Box>
     )

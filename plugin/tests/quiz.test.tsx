@@ -117,7 +117,7 @@ test('a queue and difficulty stored under the old names still load', async ($, o
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 out of 5/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /An old question\?/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -140,11 +140,11 @@ test('"Absolutely no idea" reveals the answer and steps the difficulty down', as
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Difficulty 3 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 3 out of 5/ })).toBeTruthy()
 
   await ui.press({ key: 'no-idea' })
   expect(await ui.find({ type: 'Text', text: /No worries — it was/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 out of 5/ })).toBeTruthy()
 
   // The next questions are asked for at the new difficulty
   await clock.advance(3000)
@@ -210,7 +210,7 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   const right = await ui.find({ type: 'Button', text: /right one/ })
   await ui.press({ key: right!.key! })
   expect(await ui.find({ type: 'Text', text: /Correct!/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 out of 5/ })).toBeTruthy()
   await ui.press({ key: 'next' })
 
   // Skipping moves straight on to the next question, difficulty unchanged
@@ -240,7 +240,7 @@ test('an issue you describe is rephrased and written to docs/issues/todo', async
 
   // Answer first: the reveal is where a bad name usually shows up
   await ui.press({ key: 'choice-0' })
-  const difficultyBefore = (await ui.find({ type: 'Text', text: /Difficulty \d of 5/ }))?.text
+  const difficultyBefore = (await ui.find({ type: 'Text', text: /Difficulty \d out of 5/ }))?.text
   await ui.press({ key: 'report' })
   await ui.input({ key: 'issue', text: 'x is a terrible name' })
   expect(await ui.find({ type: 'Text', text: /Filing the issue/ })).toBeTruthy()
@@ -261,7 +261,7 @@ test('an issue you describe is rephrased and written to docs/issues/todo', async
   expect(await ui.find({ type: 'Text', text: /Filed docs\/issues\/todo\// })).toBeTruthy()
 
   // Filing doesn't move the difficulty, and a second issue with the same title gets its own file
-  expect((await ui.find({ type: 'Text', text: /Difficulty \d of 5/ }))?.text).toBe(difficultyBefore)
+  expect((await ui.find({ type: 'Text', text: /Difficulty \d out of 5/ }))?.text).toBe(difficultyBefore)
   await ui.press({ key: 'report' })
   await ui.input({ key: 'issue', text: 'still a terrible name' })
   await clock.advance(1000)
