@@ -268,10 +268,25 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
 
   // Skipping moves straight on to the next question, difficulty unchanged
   await ui.press({ key: 'ask' })
-  expect(await ui.find({ key: 'skip' })).toBeTruthy()
   await ui.press({ key: 'skip' })
-  expect(await ui.find({ key: 'skip' })).toBeFalsy()
+  expect(await ui.find({ type: 'Input', key: 'ask' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ask', text: /Ask a clarifying question/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 out of 5/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a skipped question is not asked again', async ($, on) => {
+  const known = { ...FILLER, id: 'known', prompt: 'Which folder holds the tests?' }
+  const { clock, store } = world(on, { 'queue:/repo': [known], 'answered:/repo': SEEDS.map(q => q.prompt) })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Which folder holds the tests\?/ })).toBeTruthy()
+  await ui.press({ key: 'skip' })
+  expect(await ui.find({ type: 'Text', text: /No new question yet/ })).toBeTruthy()
+  expect(store['answered:/repo']).toContain('Which folder holds the tests?')
   await ui.unmount()
 })
 

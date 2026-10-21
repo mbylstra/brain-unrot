@@ -9,7 +9,7 @@ import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh
 const PANE = 'brain-unrot'
 const MODEL = 'haiku'
 const QUEUE_MAX = 30
-// Prompts answered right that are remembered, and how many of them generation is told to avoid
+// Prompts answered right or skipped that are remembered, and how many of them generation is told to avoid
 const ANSWERED_MAX = 200
 const AVOID_MAX = 50
 // Below this many ready questions, generate some about the repo as a whole
@@ -86,7 +86,7 @@ function withQueue<T>($: EngineInterface, fn: (queue: Question[]) => Promise<[Qu
   return run
 }
 
-// Prompts answered right, kept per project so they aren't asked again. Generated ids
+// Prompts answered right or skipped, kept per project so they aren't asked again. Generated ids
 // change each time, so a question is known by its prompt
 const answeredKey = async ($: EngineInterface) => `answered:${await $.session.root()}`
 const said = (prompt: string) => prompt.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -746,8 +746,10 @@ export const register: Register = on => {
       await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
     }
 
+    // A skipped question isn't asked again, and doesn't move the difficulty
     const skip = async () => {
       debug($, `skip: ${question.id}`)
+      await remember($, question)
       await newRound($)
     }
 
@@ -781,6 +783,7 @@ export const register: Register = on => {
           <Text bold>{question.prompt}</Text>
           {choices}
           {Input ? <Button key="ask" plain hotkey="6" label="6. Ask a clarifying question" onPress={ask} /> : null}
+          <Button key="skip" plain hotkey="s" label="Skip this question" onPress={skip} />
           {reportButton}
         </Box>
       )

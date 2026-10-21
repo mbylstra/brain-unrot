@@ -41,14 +41,14 @@ border means the pane is focused.
 | 6 | Ask a clarifying question. Claude discusses it without giving the answer away |
 | 7 | Suggest an improvement or file a bug |
 | n | Next question |
-| s | Skip this question (while discussing it) |
+| s | Skip this question. It isn't asked again |
 
 After you answer, the pane shows the right answer, a one-line explanation
 and the file the question came from.
 
 **Difficulty** goes from 1 to 5 and starts at 1. Three right in a row moves
 it up one; a wrong answer moves it down half a step, and "no idea" moves it
-down one. Questions answered right aren't asked again. Ones answered wrong
+down one. Questions answered right or skipped aren't asked again. Ones answered wrong
 come back later.
 
 **Filing issues.** Questions often expose a confusing name or a bug. Press
