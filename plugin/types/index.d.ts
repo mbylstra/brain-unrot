@@ -1,7 +1,7 @@
-export type LastPrompt = string | null
+export type Round = { answer: number; guess: number | null }
 
 declare module 'claude-code' {
   interface PluginState {
-    'brain-unrot': { lastPrompt: LastPrompt }
+    'brain-unrot': { round: Round | null }
   }
 }
