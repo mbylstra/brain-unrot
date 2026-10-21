@@ -59,7 +59,7 @@ function world(on: On, store: Record<string, unknown> = {}, env: Record<string, 
   on('process.run', (_, e) => {
     calls.push({ argv: e.argv, env: e.init?.env })
     const prompt = e.argv[2] ?? ''
-    const stdout = prompt.includes('clarifying question')
+    const stdout = prompt.startsWith('You help a developer')
       ? CHAT_REPLY
       : prompt.includes('Rewrite their note')
         ? ISSUE_REPLY
@@ -149,6 +149,35 @@ test('"Absolutely no idea" reveals the answer and steps the difficulty down', as
   // The next questions are asked for at the new difficulty
   await clock.advance(3000)
   expect(calls[0]!.argv[2]).toContain('Difficulty: 2 of 5')
+  await ui.unmount()
+})
+
+test('after the answer is shown you can ask about it', async ($, on) => {
+  const known = { ...FILLER, id: 'known', choices: ['right one', 'b', 'c', 'd'], difficulty: 1 }
+  const { clock, calls } = world(on, { 'skill:/repo': { difficulty: 2, streak: 2 }, 'queue:/repo': [known] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await ui.press({ key: 'no-idea' })
+  expect(await ui.find({ type: 'Text', text: /No worries — it was/ })).toBeTruthy()
+  await ui.press({ key: 'ask' })
+  await ui.input({ key: 'ask', text: 'Why not b?' })
+  expect(await ui.find({ type: 'Text', text: /You: Why not b\?/ })).toBeTruthy()
+
+  // Now claude may explain the answer
+  await clock.advance(1000)
+  const chat = calls.find(c => c.argv[2]?.includes('seen the correct answer'))!
+  expect(chat.argv[2]).not.toContain('Never reveal it')
+  expect(chat.argv[2]).toContain('They chose "Absolutely no idea"')
+  expect(chat.argv[2]).toContain('Developer: Why not b?')
+  expect(await ui.find({ type: 'Markdown', text: /no file to read/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /No worries — it was/ })).toBeTruthy()
+
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Button', key: 'ask', text: /Ask a clarifying question/ })).toBeTruthy()
   await ui.unmount()
 })
 

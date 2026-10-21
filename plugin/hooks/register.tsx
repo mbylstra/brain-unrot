@@ -231,7 +231,10 @@ async function askClaude($: EngineInterface, prompt: string, root: string): Prom
   return stdout
 }
 
-const CHAT_PROMPT = (q: Question, chat: Message[]) => `You help a developer with a multiple-choice quiz question about the codebase in the current directory. They've asked a clarifying question before choosing an answer.
+// Before an answer, claude explains without giving it away; after, it explains the answer
+const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You help a developer with a multiple-choice quiz question about the codebase in the current directory. ${
+  guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
+}
 
 The question${q.file ? ` (about ${q.file})` : ''}:
 ${q.prompt}
@@ -239,7 +242,13 @@ ${q.prompt}
 The choices:
 ${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
-The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses, and the surrounding code, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.
+${
+  guess === null
+    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses, and the surrounding code, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
+    : `The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''} They chose ${
+        guess === NO_IDEA ? '"Absolutely no idea"' : guess + 1
+      }. Help them understand why the answer is right and the others are not. You may read the code.`
+}
 
 The discussion so far:
 ${chat.map(m => `${m.from === 'you' ? 'Developer' : 'You'}: ${m.text}`).join('\n\n')}
@@ -253,16 +262,16 @@ async function discuss($: EngineInterface) {
   if (isChatting) return
   const current = await read($, round)
   const chat = current?.chat
-  if (!current || current.guess !== null || !chat || chat.at(-1)?.from !== 'you') return
+  if (!current || !chat || chat.at(-1)?.from !== 'you') return
 
   isChatting = true
-  const { question } = current
-  const same = (r: Round | null): r is Round => r?.question.id === question.id && r.guess === null && r.chat !== undefined
+  const { question, guess } = current
+  const same = (r: Round | null): r is Round => r?.question.id === question.id && r.guess === guess && r.chat !== undefined
   const reply = (text: string) =>
     update($, round, r => (same(r) ? { ...r, chat: [...chat, { from: 'claude', text } as Message], isThinking: false } : r))
   try {
     debug($, `chat ${question.id}: asking claude`)
-    const text = (await askClaude($, CHAT_PROMPT(question, chat), await $.session.root())).trim()
+    const text = (await askClaude($, CHAT_PROMPT(question, chat, guess), await $.session.root())).trim()
     await reply(text || '(no reply)')
   } catch (err) {
     debug($, `chat ${question.id}: ${String(err)}`)
@@ -571,20 +580,24 @@ export const register: Register = on => {
       )
     }
 
+    const transcript = [
+      ...(chat ?? []).map((m, i) =>
+        m.from === 'you' ? (
+          <Text key={`msg-${i}`} color="cyan">You: {m.text}</Text>
+        ) : (
+          <Markdown key={`msg-${i}`} text={m.text} />
+        )
+      ),
+      ...(current.isThinking ? [<Text key="thinking" dimColor>Claude is thinking…</Text>] : []),
+    ]
+
     if (guess === null && chat && Input) {
       return frame(
         <Box flexDirection="column" gap={1}>
           {source}
           <Text bold>{question.prompt}</Text>
           {choices}
-          {chat.map((m, i) =>
-            m.from === 'you' ? (
-              <Text key={`msg-${i}`} color="cyan">You: {m.text}</Text>
-            ) : (
-              <Markdown key={`msg-${i}`} text={m.text} />
-            )
-          )}
-          {current.isThinking ? <Text dimColor>Claude is thinking…</Text> : null}
+          {transcript}
           <Input
             key="ask"
             placeholder={chat.length === 0 ? 'Ask about the question…' : 'Ask a follow-up…'}
@@ -623,12 +636,30 @@ export const register: Register = on => {
         </Text>
       )
 
+    // A discussion from before answering carries on here, now about the answer
+    const discussion = !Input ? null : chat ? (
+      <Box flexDirection="column" gap={1}>
+        {transcript}
+        <Input
+          key="ask"
+          placeholder={chat.length === 0 ? 'Ask about the answer…' : 'Ask a follow-up…'}
+          submitLabel="ask"
+          value={current.draft ?? ''}
+          onInput={type}
+          onSubmit={send}
+        />
+      </Box>
+    ) : (
+      <Button key="ask" plain hotkey="6" label="6. Ask about the answer" onPress={ask} />
+    )
+
     return frame(
       <Box flexDirection="column" gap={1}>
         {source}
         <Text bold>{question.prompt}</Text>
         {verdict}
         {question.explanation ? <Text>{question.explanation}</Text> : null}
+        {discussion}
         <Button key="next" hotkey="n" label="Next question" autoFocus onPress={() => newRound($)} />
         {reportButton}
       </Box>
