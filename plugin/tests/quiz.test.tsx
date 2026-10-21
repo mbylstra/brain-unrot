@@ -616,6 +616,12 @@ test('reactions tune later tidbits, and expired ones are never shown', async ($,
   expect(await ui.find({ type: 'Text', text: /Evergreen/ })).toBeTruthy()
   await ui.press({ key: 'knew-it' })
   expect((store['tidbits:prefs'] as Prefs).level).toBe(2.5)
+
+  // Both are kept in the history, newest first, with your reaction
+  expect(store['tidbits:history']).toMatchObject([
+    { id: SEED_TIDBITS[0]!.id, reaction: 'knew-it' },
+    { id: TIP.id, headline: TIP.headline, url: TIP.url, reaction: 'not-useful', shownAt: new Date(NOW).toISOString() },
+  ])
   await ui.unmount()
 })
 
@@ -638,6 +644,7 @@ test('you can ask about a tidbit, with the web, and file a bug about it', async 
   await ui.press({ key: 'ask' })
   await ui.input({ key: 'ask', text: 'Does this still work?' })
   await clock.advance(1000)
+  expect(store['tidbits:history']).toMatchObject([{ id: TIP.id, isAsked: true }])
   const chat = calls.find(c => c.argv[2]?.includes('"did you know" tip'))!
   expect(chat.argv[2]).toContain('Source: https://example.com/tip (published 2026-10-18)')
   expect(chat.argv[2]).toContain('they run Claude Code 2.1.305')

@@ -39,6 +39,9 @@ export type Tidbit = {
   isVerified: boolean
 }
 
+// A tidbit once it's been shown, with your last reaction and whether you asked about it
+export type ShownTidbit = Tidbit & { shownAt: string; reaction?: Reaction; isAsked?: boolean }
+
 // One turn of a clarifying discussion about the question
 export type Message = { from: 'you' | 'claude'; text: string }
 

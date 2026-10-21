@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Message, Prefs, Reaction, Tidbit, Topic } from '../types'
+import type { Message, Prefs, Reaction, ShownTidbit, Tidbit, Topic } from '../types'
 import { askClaude, debug, random } from './claude'
 import { SEED_TIDBITS } from './seeds'
 
@@ -19,6 +19,7 @@ const LOW_REFRESH_MS = 60 * 60_000
 const RETRY_MS = 30 * 60_000
 const TIDBITS_MAX = 40
 const SEEN_MAX = 1000
+const HISTORY_MAX = 500
 const FEATURE_TTL = 42 * DAY
 const TECHNIQUE_TTL = 84 * DAY
 // Releases older than this aren't turned into tidbits
@@ -57,7 +58,7 @@ const LEVELS: Record<number, string> = {
 }
 
 // Stored globally, since this knowledge isn't per repo
-const KEY = { tidbits: 'tidbits', seen: 'tidbits:seen', cursor: 'tidbits:cursor', prefs: 'tidbits:prefs' }
+const KEY = { tidbits: 'tidbits', seen: 'tidbits:seen', cursor: 'tidbits:cursor', prefs: 'tidbits:prefs', history: 'tidbits:history' }
 
 // `version` and `etag` are where the CHANGELOG was last read up to; `changelogAt` and
 // `researchedAt` when each lane last ran. `firstSeen` dates releases the releases API doesn't list
@@ -123,6 +124,20 @@ function withTidbits<T>(
   return run
 }
 
+export async function loadHistory($: EngineInterface): Promise<ShownTidbit[]> {
+  const stored = await $.store.get(KEY.history)
+  return Array.isArray(stored) ? (stored as ShownTidbit[]) : []
+}
+
+// Every tidbit shown, newest first, so they can be read again after they leave the queue
+function withHistory($: EngineInterface, fn: (history: ShownTidbit[]) => ShownTidbit[]): Promise<void> {
+  const run = lock.then(async () => {
+    await $.store.set(KEY.history, fn(await loadHistory($)).slice(0, HISTORY_MAX))
+  })
+  lock = run.catch(() => undefined)
+  return run
+}
+
 // A tidbit is known by its headline, and by its page (or its CHANGELOG line, since
 // every changelog tidbit shares the one page)
 const keysOf = (t: Tidbit) =>
@@ -159,13 +174,15 @@ export async function nextTidbit($: EngineInterface): Promise<Tidbit | undefined
     const age = (now - Date.parse(t.publishedAt ?? '')) / DAY
     return weightOf(prefs, t.topic) / (1 + (Number.isFinite(age) ? Math.max(0, age) : 30) / 14)
   }
-  return withTidbits($, async (all, seen) => {
+  const shown = await withTidbits($, async (all, seen) => {
     const tidbits = all.filter(t => !isExpired(t, now))
     const best = tidbits.reduce<Tidbit | undefined>((b, t) => (!b || score(t) > score(b) ? t : b), undefined)
     if (best) return [tidbits.filter(t => t !== best), seen, best]
     const seed = SEED_TIDBITS.find(t => !seen.includes(t.id))
     return [tidbits, seed ? [...seen, seed.id] : seen, seed]
   })
+  if (shown) await withHistory($, history => [{ ...shown, shownAt: new Date(now).toISOString() }, ...history])
+  return shown
 }
 
 // "Knew it" and "New to me" tune how advanced tidbits are; "Not useful" turns the topic
@@ -182,6 +199,12 @@ export function reacted(p: Prefs, topic: Topic, reaction: Reaction | 'asked'): P
 export async function react($: EngineInterface, t: Tidbit, reaction: Reaction | 'asked') {
   const next = reacted(await loadPrefs($), t.topic, reaction)
   await $.store.set(KEY.prefs, next)
+  await withHistory($, history => {
+    const i = history.findIndex(h => h.id === t.id)
+    if (i < 0) return history
+    const change = reaction === 'asked' ? { isAsked: true } : { reaction }
+    return history.map((h, j) => (j === i ? { ...h, ...change } : h))
+  })
   debug($, `tidbit ${t.id}: ${reaction} -> level ${next.level}, ${t.topic} ${weightOf(next, t.topic)}`)
 }
 

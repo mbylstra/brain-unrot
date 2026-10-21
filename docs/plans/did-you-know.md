@@ -130,7 +130,9 @@ The "check quoted code" idea in quiz-ideas.md, applied to the web:
 - **Global storage**, since this knowledge isn't per repo: `tidbits`
   (about 40 ready, newest first), `tidbits:seen` (hashes),
   `tidbits:cursor` (the last CHANGELOG version and feed entry dates),
-  `tidbits:prefs` (topic weights and the knew-it / new-to-me balance). All are small next to the 4 MiB cap.
+  `tidbits:prefs` (topic weights and the knew-it / new-to-me balance),
+  `tidbits:history` (the last 500 tidbits shown, with your reaction). All
+  are small next to the 4 MiB cap.
 - **Expiry.** Each tidbit gets `expiresAt` (about 6 weeks for features,
   12 for general techniques) and is dropped when served past it. When
   picking a tidbit, prefer newer ones.
