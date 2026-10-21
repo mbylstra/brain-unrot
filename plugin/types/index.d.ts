@@ -47,7 +47,7 @@ export type Reaction = 'knew-it' | 'new-to-me' | 'not-useful'
 // `chat` is set once you ask about the round, `draft` holds what you're typing,
 // and `isThinking` is set while Claude replies.
 // `issue` holds what you're typing while the "Suggest improvement or file a bug" box is open.
-type Shared = {
+export type Shared = {
   chat?: Message[]
   draft?: string
   isThinking?: boolean

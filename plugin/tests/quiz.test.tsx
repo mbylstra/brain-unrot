@@ -241,6 +241,11 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   await ui.press({ key: 'ask' })
   await ui.input({ key: 'ask', text: 'What does', kind: 'change' })
   expect((await ui.find({ type: 'Input', key: 'ask' }))?.text).toBe('What does')
+  // Docked, a field cuts a long line, so the whole draft is echoed above it
+  expect(await ui.find({ type: 'Text', text: 'What does' })).toBeFalsy()
+  const long = 'What does it mean for the file to be missing, and is that the same as an empty file?'
+  await ui.input({ key: 'ask', text: long, kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: long })).toBeTruthy()
   await ui.input({ key: 'ask', text: 'What does "missing" mean here?' })
   expect((await ui.find({ type: 'Input', key: 'ask' }))?.text).toBe('')
   expect(await ui.find({ type: 'Text', text: /You: What does "missing" mean here\?/ })).toBeTruthy()

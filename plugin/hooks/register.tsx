@@ -539,6 +539,29 @@ export const register: Register = on => {
     const status = await read($, notice)
 
     const isFocused = e.props.isFocused
+    // Claude Code's text field doesn't reliably wrap in a docked pane: a long line
+    // is cut with "…", or wraps with its second row left blank
+    // (anthropics/claude-code#103858). Docked, it stays one line and the whole
+    // text is echoed above it once it no longer fits.
+    const isDocked = e.props.placement === 'dock'
+    const field = (props: { key: string; placeholder: string; submitLabel: string; value: string; onInput: (v: string) => void; onSubmit: (v: string) => void }) => {
+      if (!Input) return null
+      if (!isDocked) return <Input {...props} rows={3} />
+      // The frame's border and padding, the submit hint and the cursor
+      const room = e.props.bodyColumns - 4 - (props.submitLabel.length + 2) - 1
+      return (
+        <Box flexDirection="column">
+          {props.value.length > room ? (
+            <>
+              <Text dimColor italic>Claude Code's text box can't wrap in a side pane yet, so here's all of it:</Text>
+              <Text dimColor>{props.value}</Text>
+            </>
+          ) : null}
+          <Input {...props} />
+        </Box>
+      )
+    }
+
     const frame = (body: JSX.Element) => (
       <Box flexDirection="column" gap={1} borderStyle="round" borderColor={isFocused ? 'green' : 'gray'} paddingX={1}>
         {isFocused ? (
@@ -627,14 +650,14 @@ export const register: Register = on => {
               ? 'What could be better? Out of date, wrong, unclear…'
               : 'What could be better? A confusing name, a bug, a wrong question…'}
           </Text>
-          <Input
-            key="issue"
-            placeholder="Describe the issue…"
-            submitLabel="file"
-            value={issue}
-            onInput={describe}
-            onSubmit={submitIssue}
-          />
+          {field({
+            key: 'issue',
+            placeholder: 'Describe the issue…',
+            submitLabel: 'file',
+            value: issue,
+            onInput: describe,
+            onSubmit: submitIssue,
+          })}
           <Button key="cancel-issue" plain hotkey="c" label="Cancel" onPress={closeIssue} />
           <Text dimColor>Claude rewrites it and saves it to {ISSUES_DIR}/.</Text>
         </Box>
@@ -656,14 +679,14 @@ export const register: Register = on => {
       Input && chat ? (
         <Box flexDirection="column" gap={1}>
           {transcript}
-          <Input
-            key="ask"
-            placeholder={chat.length === 0 ? placeholder : 'Ask a follow-up…'}
-            submitLabel="ask"
-            value={current.draft ?? ''}
-            onInput={type}
-            onSubmit={send}
-          />
+          {field({
+            key: 'ask',
+            placeholder: chat.length === 0 ? placeholder : 'Ask a follow-up…',
+            submitLabel: 'ask',
+            value: current.draft ?? '',
+            onInput: type,
+            onSubmit: send,
+          })}
         </Box>
       ) : null
 
