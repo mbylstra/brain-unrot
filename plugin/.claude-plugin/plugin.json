@@ -1,0 +1,1 @@
+{ "name": "brain-unrot", "version": "0.1.0", "description": "Opens a side pane on each prompt (v0: parrots the prompt)", "types": "./types/index.d.ts" }
