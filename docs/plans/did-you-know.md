@@ -197,13 +197,17 @@ as-is, with these changes:
 2. ~~Does `--json-schema` work with `--output-format json`?~~ Yes, the
    reply has `structured_output` and `total_cost_usd`.
 3. ~~Is the raw CHANGELOG URL public?~~ Yes, see lane 1.
-4. Does the GitHub releases API give dates for these versions, or does
-   the plugin have to record when it first saw each one?
+4. ~~Does the GitHub releases API give dates for these versions?~~ Yes:
+   `published_at` per release, tagged `v2.1.306` where the CHANGELOG says
+   `2.1.306`. A version it doesn't list falls back to the date the plugin
+   first saw it.
 5. Can `$.http.fetch` reach github.com and Anthropic's sites from inside
    the plugin, and does it follow redirects (docs.claude.com redirects to
    code.claude.com)?
 6. How often do real sources fail the quote check because they're
    rendered by JavaScript? If it's most of them, verify through a WebFetch
    child instead.
-7. Should the plugin parse the 1 MB CHANGELOG every day, or use an HTTP
-   range or ETag to skip the download when nothing changed?
+7. ~~Parse the 1 MB CHANGELOG every day, or skip it when nothing
+   changed?~~ raw.githubusercontent.com serves an ETag, so the plugin
+   sends `If-None-Match` and a 304 skips it. The CHANGELOG is never kept
+   in `$.store`.

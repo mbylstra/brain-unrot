@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Issue, Message, Question, Round, Skill } from '../types'
+import type { Issue, Message, Question, Reaction, Round, Skill, Tidbit } from '../types'
+import { askClaude, CHILD_ENV, debug, random } from './claude'
 import { SEEDS } from './seeds'
+import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
 
 const PANE = 'brain-unrot'
 const MODEL = 'haiku'
@@ -16,9 +18,9 @@ const TICK_MS = 3000
 // How often to check for a clarifying question waiting for a reply, or an issue to file
 const CHAT_TICK_MS = 1000
 const ISSUES_DIR = 'docs/issues/todo'
-const CLI_TIMEOUT_MS = 5 * 60_000
 const RETRY_MS = 60_000
-const CHILD_ENV = 'BRAIN_UNROT_CHILD'
+// Questions read the code and its git history: Bash is limited to reading git history
+const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
 // The guess recorded for "Absolutely no idea"
 const NO_IDEA = -1
 const DIFFICULTY_MIN = 1
@@ -36,22 +38,11 @@ const DIFFICULTIES: Record<number, string> = {
 
 const round = atom({ plugin: 'brain-unrot', key: 'round' } as const, null as Round | null)
 const ready = atom({ plugin: 'brain-unrot', key: 'ready' } as const, 0)
+// Tidbits ready to show, not counting the seed tidbits
+const tips = atom({ plugin: 'brain-unrot', key: 'tips' } as const, 0)
 const skill = atom({ plugin: 'brain-unrot', key: 'skill' } as const, { difficulty: DIFFICULTY_MIN, streak: 0 } as Skill)
 // A line in the footer about the last issue filed, e.g. where it was written
 const notice = atom({ plugin: 'brain-unrot', key: 'notice' } as const, null as string | null)
-
-// Debug trail Claude can read back (the transcript isn't visible to it)
-const trail: string[] = []
-
-function debug($: EngineInterface, line: string) {
-  trail.push(`${new Date().toISOString()} ${line}`)
-  void $.fs.write(`${$.plugin.root}/.debug.log`, trail.slice(-200).join('\n') + '\n').catch(() => undefined)
-}
-
-const random = (n: number) => {
-  const [r = 0] = crypto.getRandomValues(new Uint32Array(1))
-  return r % n
-}
 
 // Models (and the seeds) put the right answer first far too often
 function shuffle(q: Question): Question {
@@ -163,10 +154,30 @@ async function nextQuestion($: EngineInterface, last?: string): Promise<Question
   return question && shuffle(question)
 }
 
+// What the round is about, whichever kind it is
+const roundId = (r: Round) => (r.kind === 'tidbit' ? r.tidbit.id : r.question.id)
+
+const countTips = async ($: EngineInterface) => {
+  const count = await tidbitsReady($)
+  await update($, tips, () => count)
+}
+
+// About one round in three is a tidbit, when one is ready; with no question left,
+// a tidbit is better than nothing
 const newRound = async ($: EngineInterface) => {
-  const question = await nextQuestion($, (await read($, round))?.question.id)
+  const last = await read($, round)
+  const { share } = await loadPrefs($)
+  const tidbit = share > 0 && random(1000) < share * 1000 ? await nextTidbit($) : undefined
+  const question = tidbit ? undefined : await nextQuestion($, last && last.kind !== 'tidbit' ? last.question.id : undefined)
+  const shown = tidbit ?? (question || share === 0 ? undefined : await nextTidbit($))
+  if (shown) {
+    debug($, `round: tidbit ${shown.id}`)
+    await update($, round, (): Round => ({ kind: 'tidbit', tidbit: shown, reaction: null }))
+    await countTips($)
+    return
+  }
   debug($, `round: ${question ? `${question.id} ${question.file ?? '(seed)'}` : '(none left)'}`)
-  await update($, round, () => (question ? { question, guess: null } : null))
+  await update($, round, (): Round | null => (question ? { kind: 'question', question, guess: null } : null))
 }
 
 // Files Claude has read this session, waiting to be turned into questions
@@ -244,37 +255,6 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
   })
 }
 
-// Hardcoded to the claude CLI for now; other backends can come later.
-// Bash is limited to reading git history: dontAsk refuses anything not allowed here,
-// whatever permission mode the user's settings default to
-async function askClaude($: EngineInterface, prompt: string, root: string): Promise<string> {
-  const { exitCode, stdout, stderr } = await $.process.run(
-    [
-      'claude',
-      '-p',
-      prompt,
-      '--model',
-      MODEL,
-      '--tools',
-      'Read,Grep,Glob,Bash',
-      '--allowedTools',
-      'Bash(git log:*)',
-      'Bash(git show:*)',
-      'Bash(git blame:*)',
-      '--permission-mode',
-      'dontAsk',
-      '--setting-sources',
-      'user',
-      '--strict-mcp-config',
-      '--no-session-persistence',
-    ],
-    // The child would load this plugin too; CHILD_ENV switches it off there
-    { cwd: root, env: { [CHILD_ENV]: '1' }, stdin: '', timeoutMs: CLI_TIMEOUT_MS },
-  )
-  if (exitCode !== 0) throw new Error(`claude exited ${exitCode}: ${stderr.slice(0, 200)}`)
-  return stdout
-}
-
 // Before an answer, claude explains without giving it away; after, it explains the answer
 const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You help a developer with a multiple-choice quiz question about the codebase in the current directory. ${
   guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
@@ -299,6 +279,19 @@ ${chat.map(m => `${m.from === 'you' ? 'Developer' : 'You'}: ${m.text}`).join('\n
 
 Reply to the developer's last message in a few short sentences of plain text. Put identifiers in backticks.`
 
+// The tidbit keys: there's no right answer, so they record a reaction
+const REACTIONS: [Reaction, string][] = [
+  ['knew-it', 'Knew it'],
+  ['new-to-me', 'New to me'],
+  ['not-useful', 'Not useful'],
+]
+
+const THANKS: Record<Reaction, string> = {
+  'knew-it': 'Noted: later tidbits will be a bit more advanced.',
+  'new-to-me': 'Noted: later tidbits will stay at this level.',
+  'not-useful': 'Noted: fewer tidbits on this topic.',
+}
+
 // A clarifying question waiting for a reply; the reply lands only if the round is still the same
 let isChatting = false
 
@@ -309,16 +302,22 @@ async function discuss($: EngineInterface) {
   if (!current || !chat || chat.at(-1)?.from !== 'you') return
 
   isChatting = true
-  const { question, guess } = current
-  const same = (r: Round | null): r is Round => r?.question.id === question.id && r.guess === guess && r.chat !== undefined
+  const id = roundId(current)
+  const guess = current.kind === 'tidbit' ? undefined : current.guess
+  const same = (r: Round | null): r is Round =>
+    r !== null && roundId(r) === id && (r.kind === 'tidbit' || r.guess === guess) && r.chat !== undefined
   const reply = (text: string) =>
     update($, round, r => (same(r) ? { ...r, chat: [...chat, { from: 'claude', text } as Message], isThinking: false } : r))
   try {
-    debug($, `chat ${question.id}: asking claude`)
-    const text = (await askClaude($, CHAT_PROMPT(question, chat, guess), await $.session.root())).trim()
-    await reply(text || '(no reply)')
+    debug($, `chat ${id}: asking claude`)
+    const root = await $.session.root()
+    const text =
+      current.kind === 'tidbit'
+        ? await askAboutTidbit($, current.tidbit, chat, root)
+        : (await askClaude($, CHAT_PROMPT(current.question, chat, current.guess), { ...CODE, cwd: root })).text
+    await reply(text.trim() || '(no reply)')
   } catch (err) {
-    debug($, `chat ${question.id}: ${String(err)}`)
+    debug($, `chat ${id}: ${String(err)}`)
     await reply('Sorry, that failed. Try asking again.')
   } finally {
     isChatting = false
@@ -326,21 +325,30 @@ async function discuss($: EngineInterface) {
 }
 
 const ISSUE_PROMPT = (issue: Issue) => {
-  const q = issue.question
-  return `A developer was answering a multiple-choice quiz question about the codebase in the current directory and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
+  const { about } = issue
+  const context =
+    about.kind === 'tidbit'
+      ? `A developer read a "did you know" tip about coding with LLMs, shown by the Brain Unrot quiz pane, and noticed something that could be improved or fixed (often that the tip is wrong or out of date). Rewrite their note as a short, clear issue for the repository.
 
-The question${q.file ? ` (about ${q.file})` : ''}:
-${q.prompt}
+The tip:
+${about.tidbit.headline}
+${about.tidbit.body}
+Source: ${about.tidbit.url}`
+      : `A developer was answering a multiple-choice quiz question about the codebase in the current directory and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
+
+The question${about.question.file ? ` (about ${about.question.file})` : ''}:
+${about.question.prompt}
 
 The choices:
-${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+${about.question.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
-The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''}
+The correct answer is ${about.question.answer + 1}.${about.question.explanation ? ` ${about.question.explanation}` : ''}`
+  return `${context}
 
 Their note:
 ${issue.text}
 
-You may read the code to name the file, function or variable precisely. Rephrase only what they raised: don't add other problems or fixes of your own. If the quiz question itself is wrong or misleading, say so.
+You may read the code to name the file, function or variable precisely. Rephrase only what they raised: don't add other problems or fixes of your own. If the ${about.kind === 'tidbit' ? 'tip' : 'quiz question'} itself is wrong or misleading, say so.
 
 Reply with JSON only, no prose and no code fence:
 {"title": "<a short title, under 70 characters>", "body": "<markdown: what the problem is, where it is (file and identifier), and the suggested change if they gave one>"}`
@@ -386,16 +394,17 @@ async function fileIssue($: EngineInterface) {
   if (!issue) return
 
   isFiling = true
-  const { question } = issue
+  const { about } = issue
+  const id = about.kind === 'tidbit' ? about.tidbit.id : about.question.id
   const root = await $.session.root()
   try {
     let rephrased: { title: string; body: string } | undefined
     try {
-      debug($, `issue ${question.id}: asking claude`)
-      rephrased = parseIssue(await askClaude($, ISSUE_PROMPT(issue), root))
-      if (!rephrased) debug($, `issue ${question.id}: unparsed reply`)
+      debug($, `issue ${id}: asking claude`)
+      rephrased = parseIssue((await askClaude($, ISSUE_PROMPT(issue), { ...CODE, cwd: root })).text)
+      if (!rephrased) debug($, `issue ${id}: unparsed reply`)
     } catch (err) {
-      debug($, `issue ${question.id}: ${String(err)}`)
+      debug($, `issue ${id}: ${String(err)}`)
     }
     // Never lose what you typed: without a rephrasing, file it as written
     const title = rephrased?.title ?? issue.text.split('\n')[0]!.slice(0, 70)
@@ -408,9 +417,13 @@ async function fileIssue($: EngineInterface) {
       '',
       '## Context',
       '',
-      `Raised while answering a Brain Unrot quiz question${question.file ? ` about \`${question.file}\`` : ''}:`,
-      '',
-      `> ${question.prompt}`,
+      ...(about.kind === 'tidbit'
+        ? [`Raised on a Brain Unrot "did you know" tip from ${about.tidbit.url}:`, '', `> ${about.tidbit.headline}`]
+        : [
+            `Raised while answering a Brain Unrot quiz question${about.question.file ? ` about \`${about.question.file}\`` : ''}:`,
+            '',
+            `> ${about.question.prompt}`,
+          ]),
       '',
       'Original note:',
       '',
@@ -419,10 +432,10 @@ async function fileIssue($: EngineInterface) {
     ].join('\n')
     await $.fs.write(path, text)
     const shown = path.slice(root.length + 1)
-    debug($, `issue ${question.id}: wrote ${shown}`)
+    debug($, `issue ${id}: wrote ${shown}`)
     await update($, notice, () => `Filed ${shown}`)
   } catch (err) {
-    debug($, `issue ${question.id}: ${String(err)}`)
+    debug($, `issue ${id}: ${String(err)}`)
     await update($, notice, () => 'Filing the issue failed; see .debug.log')
   } finally {
     isFiling = false
@@ -447,7 +460,10 @@ async function generate($: EngineInterface) {
   try {
     debug($, `generate ${label} at difficulty ${difficulty}: asking claude`)
     const avoid = avoiding(queue, answered)
-    const reply = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid), root)
+    const { text: reply } = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid), {
+      ...CODE,
+      cwd: root,
+    })
     // The avoid list is only a request, so drop any repeat of a question answered right
     const known = new Set(answered.map(said))
     const questions = parseQuestions(reply, difficulty, shown).filter(q => !known.has(said(q.prompt)))
@@ -475,8 +491,13 @@ export const register: Register = on => {
     $.clock.every(TICK_MS, () => generate($))
     $.clock.every(CHAT_TICK_MS, () => discuss($))
     $.clock.every(CHAT_TICK_MS, () => fileIssue($))
+    // Tidbit research runs about once a day, apart from question generation
+    $.clock.every(TICK_MS, async () => {
+      if ((await refresh($)).length > 0) await countTips($)
+    })
     await update($, ready, () => 0)
     void loadQueue($).then(p => update($, ready, () => p.length))
+    void countTips($)
     void loadSkill($).then(s => update($, skill, () => s))
     return result
   })
@@ -513,6 +534,7 @@ export const register: Register = on => {
     const Input = 'Input' in elements ? elements.Input : undefined
     const current = await read($, round)
     const readyCount = await read($, ready)
+    const tipCount = await read($, tips)
     const { difficulty } = await read($, skill)
     const status = await read($, notice)
 
@@ -527,7 +549,8 @@ export const register: Register = on => {
         {body}
         {status ? <Text dimColor>{status}</Text> : null}
         <Text dimColor>
-          Difficulty {Math.floor(difficulty)} out of {DIFFICULTY_MAX} · {readyCount} generated questions ready
+          Difficulty {Math.floor(difficulty)} out of {DIFFICULTY_MAX} · {readyCount} generated questions ready · {tipCount} tidbits
+          ready
         </Text>
       </Box>
     )
@@ -542,23 +565,15 @@ export const register: Register = on => {
       )
     }
 
-    const { question, guess, chat, issue } = current
-    const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
-
-    const choose = (i: number) => async () => {
-      debug($, `guess: ${i} (answer ${question.answer})`)
-      await update($, round, r => (r ? { ...r, guess: i } : r))
-      const isRight = i === question.answer
-      const wasHelped = chat?.some(m => m.from === 'you') ?? false
-      await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
-      await (isRight ? remember($, question) : requeue($, question))
-      // The pressed choice is gone; put the ring on Next so Enter moves on
-      await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
-    }
+    const { chat, issue } = current
+    const heading = current.kind === 'tidbit' ? current.tidbit.headline : current.question.prompt
+    const id = roundId(current)
 
     const ask = async () => {
-      debug($, `chat ${question.id}: opened`)
+      debug($, `chat ${id}: opened`)
       await update($, round, r => (r ? { ...r, chat: [] } : r))
+      // Asking about a tidbit turns its topic up
+      if (current.kind === 'tidbit') await react($, current.tidbit, 'asked')
       await $.ui.focus({ requestId: PANE, key: 'ask' }).catch(() => undefined)
     }
 
@@ -576,7 +591,7 @@ export const register: Register = on => {
 
     // The issue box sits on top of the round; closing it leaves the round as it was
     const report = async () => {
-      debug($, `issue ${question.id}: opened`)
+      debug($, `issue ${id}: opened`)
       await update($, round, r => (r ? { ...r, issue: '' } : r))
       await $.ui.focus({ requestId: PANE, key: 'issue' }).catch(() => undefined)
     }
@@ -592,7 +607,9 @@ export const register: Register = on => {
     const submitIssue = async (text: string) => {
       if (text.trim() === '') return
       // The issue timer picks this up, asks claude to rephrase it and writes the file
-      issues.push({ text: text.trim(), question })
+      const about: Issue['about'] =
+        current.kind === 'tidbit' ? { kind: 'tidbit', tidbit: current.tidbit } : { kind: 'question', question: current.question }
+      issues.push({ text: text.trim(), about })
       await update($, notice, () => 'Filing the issue…')
       await closeIssue()
     }
@@ -601,26 +618,15 @@ export const register: Register = on => {
       <Button key="report" plain hotkey="7" label="7. Suggest improvement or file a bug" onPress={report} />
     ) : null
 
-    const skip = async () => {
-      debug($, `skip: ${question.id}`)
-      await newRound($)
-    }
-
-    const choices = (
-      <Box flexDirection="column">
-        {question.choices.map((c, i) => (
-          <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${c}`} onPress={choose(i)} />
-        ))}
-        <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
-      </Box>
-    )
-
     if (issue !== undefined && Input) {
       return frame(
         <Box flexDirection="column" gap={1}>
-          {source}
-          <Text bold>{question.prompt}</Text>
-          <Text>What could be better? A confusing name, a bug, a wrong question…</Text>
+          <Text bold>{heading}</Text>
+          <Text>
+            {current.kind === 'tidbit'
+              ? 'What could be better? Out of date, wrong, unclear…'
+              : 'What could be better? A confusing name, a bug, a wrong question…'}
+          </Text>
           <Input
             key="issue"
             placeholder="Describe the issue…"
@@ -646,21 +652,98 @@ export const register: Register = on => {
       ...(current.isThinking ? [<Text key="thinking" dimColor>Claude is thinking…</Text>] : []),
     ]
 
+    const chatBox = (placeholder: string) =>
+      Input && chat ? (
+        <Box flexDirection="column" gap={1}>
+          {transcript}
+          <Input
+            key="ask"
+            placeholder={chat.length === 0 ? placeholder : 'Ask a follow-up…'}
+            submitLabel="ask"
+            value={current.draft ?? ''}
+            onInput={type}
+            onSubmit={send}
+          />
+        </Box>
+      ) : null
+
+    if (current.kind === 'tidbit') {
+      const { tidbit, reaction } = current
+      const now = await $.clock.now()
+      const installed = await installedVersion($)
+
+      const choose = (r: Reaction) => async () => {
+        debug($, `tidbit ${tidbit.id}: ${r}`)
+        await update($, round, x => (x?.kind === 'tidbit' ? { ...x, reaction: r } : x))
+        await react($, tidbit, r)
+        await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
+      }
+
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column">
+            <Text bold color="yellow">💡 Did you know?</Text>
+            <Text dimColor>{sourceLine(tidbit, now, installed)}</Text>
+          </Box>
+          <Text bold>{tidbit.headline}</Text>
+          <Text>{tidbit.body}</Text>
+          {tidbit.tryIt ? <Text>Try it: {tidbit.tryIt}</Text> : null}
+          <Text dimColor>
+            Source: {tidbit.url}
+            {tidbit.lane === 'research' && !tidbit.isVerified ? ' (quote not checked)' : ''}
+          </Text>
+          {reaction === null ? (
+            <Box flexDirection="column">
+              {REACTIONS.map(([r, label], i) => (
+                <Button key={r} plain hotkey={String(i + 1)} label={`${i + 1}. ${label}`} onPress={choose(r)} />
+              ))}
+            </Box>
+          ) : (
+            <Text color="green">{THANKS[reaction]}</Text>
+          )}
+          {chatBox('Ask about this tidbit…') ??
+            (Input ? <Button key="ask" plain hotkey="6" label="6. Ask about this" onPress={ask} /> : null)}
+          <Button key="next" hotkey="n" label="Next" autoFocus={reaction !== null || undefined} onPress={() => newRound($)} />
+          {reportButton}
+        </Box>
+      )
+    }
+
+    const { question, guess } = current
+    const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
+
+    const choose = (i: number) => async () => {
+      debug($, `guess: ${i} (answer ${question.answer})`)
+      await update($, round, r => (r && r.kind !== 'tidbit' ? { ...r, guess: i } : r))
+      const isRight = i === question.answer
+      const wasHelped = chat?.some(m => m.from === 'you') ?? false
+      await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
+      await (isRight ? remember($, question) : requeue($, question))
+      // The pressed choice is gone; put the ring on Next so Enter moves on
+      await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
+    }
+
+    const skip = async () => {
+      debug($, `skip: ${question.id}`)
+      await newRound($)
+    }
+
+    const choices = (
+      <Box flexDirection="column">
+        {question.choices.map((c, i) => (
+          <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${c}`} onPress={choose(i)} />
+        ))}
+        <Button key="no-idea" plain hotkey="5" label="5. Absolutely no idea" onPress={choose(NO_IDEA)} />
+      </Box>
+    )
+
     if (guess === null && chat && Input) {
       return frame(
         <Box flexDirection="column" gap={1}>
           {source}
           <Text bold>{question.prompt}</Text>
           {choices}
-          {transcript}
-          <Input
-            key="ask"
-            placeholder={chat.length === 0 ? 'Ask about the question…' : 'Ask a follow-up…'}
-            submitLabel="ask"
-            value={current.draft ?? ''}
-            onInput={type}
-            onSubmit={send}
-          />
+          {chatBox('Ask about the question…')}
           <Button key="skip" plain hotkey="s" label="Skip this question" onPress={skip} />
           {reportButton}
           <Text dimColor>Up or Down leaves the box: pick a choice to answer, or skip.</Text>
@@ -692,21 +775,9 @@ export const register: Register = on => {
       )
 
     // A discussion from before answering carries on here, now about the answer
-    const discussion = !Input ? null : chat ? (
-      <Box flexDirection="column" gap={1}>
-        {transcript}
-        <Input
-          key="ask"
-          placeholder={chat.length === 0 ? 'Ask about the answer…' : 'Ask a follow-up…'}
-          submitLabel="ask"
-          value={current.draft ?? ''}
-          onInput={type}
-          onSubmit={send}
-        />
-      </Box>
-    ) : (
-      <Button key="ask" plain hotkey="6" label="6. Ask about the answer" onPress={ask} />
-    )
+    const discussion =
+      chatBox('Ask about the answer…') ??
+      (Input ? <Button key="ask" plain hotkey="6" label="6. Ask about the answer" onPress={ask} /> : null)
 
     return frame(
       <Box flexDirection="column" gap={1}>
