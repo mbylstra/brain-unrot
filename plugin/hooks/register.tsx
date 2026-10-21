@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Issue, Message, Question, Reaction, Round, Skill, Tidbit } from '../types'
-import { askClaude, CHILD_ENV, debug, random } from './claude'
+import { askClaude, debug, random } from './claude'
 import { SEEDS } from './seeds'
 import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
 
@@ -487,7 +487,8 @@ async function generate($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // Inside the claude process that generates questions, stay out of the way
+    // Inside the claude process that generates questions, stay out of the way.
+    // This is DISABLE_PLUGIN_ENV from claude.ts; $.env.get needs the name spelled out
     isChild = (await $.env.get('BRAIN_UNROT_CHILD')) !== undefined
     if (isChild) return next(e)
     const result = await next(e)

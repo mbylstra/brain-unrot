@@ -1,6 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
-export const CHILD_ENV = 'BRAIN_UNROT_CHILD'
+// Set on the claude process we spawn; when present, the plugin switches itself off there
+export const DISABLE_PLUGIN_ENV = 'BRAIN_UNROT_CHILD'
 const CLI_TIMEOUT_MS = 5 * 60_000
 
 // Debug trail Claude can read back (the transcript isn't visible to it)
@@ -55,8 +56,8 @@ export async function askClaude($: EngineInterface, prompt: string, ask: Ask): P
       ...(ask.schema ? ['--output-format', 'json', '--json-schema', JSON.stringify(ask.schema)] : []),
       ...(ask.budget ? ['--max-budget-usd', String(ask.budget)] : []),
     ],
-    // The child would load this plugin too; CHILD_ENV switches it off there
-    { cwd: ask.cwd, env: { [CHILD_ENV]: '1' }, stdin: '', timeoutMs: CLI_TIMEOUT_MS },
+    // The child would load this plugin too; DISABLE_PLUGIN_ENV switches it off there
+    { cwd: ask.cwd, env: { [DISABLE_PLUGIN_ENV]: '1' }, stdin: '', timeoutMs: CLI_TIMEOUT_MS },
   )
   if (exitCode !== 0) throw new Error(`claude exited ${exitCode}: ${stderr.slice(0, 200)}`)
   if (!ask.schema) return { text: stdout }
