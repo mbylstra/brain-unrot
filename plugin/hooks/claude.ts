@@ -47,6 +47,9 @@ export async function askClaude($: EngineInterface, prompt: string, ask: Ask): P
       'dontAsk',
       '--setting-sources',
       'user',
+      // The user's own hooks (e.g. a Stop notification) are meant for their session, not this one
+      '--settings',
+      JSON.stringify({ disableAllHooks: true }),
       '--strict-mcp-config',
       '--no-session-persistence',
       ...(ask.schema ? ['--output-format', 'json', '--json-schema', JSON.stringify(ask.schema)] : []),
