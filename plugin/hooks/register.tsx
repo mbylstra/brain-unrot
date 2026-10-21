@@ -7,6 +7,9 @@ import { SEEDS } from './seeds'
 const PANE = 'brain-unrot'
 const MODEL = 'haiku'
 const QUEUE_MAX = 30
+// Prompts answered right that are remembered, and how many of them generation is told to avoid
+const ANSWERED_MAX = 200
+const AVOID_MAX = 50
 // Below this many ready questions, generate some about the repo as a whole
 const QUEUE_LOW = 5
 const TICK_MS = 3000
@@ -92,6 +95,28 @@ function withQueue<T>($: EngineInterface, fn: (queue: Question[]) => Promise<[Qu
   return run
 }
 
+// Prompts answered right, kept per project so they aren't asked again. Generated ids
+// change each time, so a question is known by its prompt
+const answeredKey = async ($: EngineInterface) => `answered:${await $.session.root()}`
+const said = (prompt: string) => prompt.trim().toLowerCase().replace(/\s+/g, ' ')
+
+async function loadAnswered($: EngineInterface): Promise<string[]> {
+  const stored = await $.store.get(await answeredKey($))
+  return Array.isArray(stored) ? (stored as string[]) : []
+}
+
+async function remember($: EngineInterface, q: Question) {
+  const answered = (await loadAnswered($)).filter(p => said(p) !== said(q.prompt))
+  await $.store.set(await answeredKey($), [...answered, q.prompt].slice(-ANSWERED_MAX))
+}
+
+// A question answered wrong goes to the back of the queue, to come round again later.
+// Seed questions stay out of it: they're picked from SEEDS again anyway
+async function requeue($: EngineInterface, q: Question) {
+  if (SEEDS.some(seed => seed.id === q.id)) return
+  await withQueue($, async queue => [[...queue.filter(p => p.id !== q.id).slice(0, QUEUE_MAX - 1), q], undefined])
+}
+
 // Skill: a 3-up staircase per project; a wrong answer or "no idea" steps down
 const skillKey = async ($: EngineInterface) => `skill:${await $.session.root()}`
 
@@ -122,20 +147,25 @@ async function record($: EngineInterface, outcome: Outcome) {
   debug($, `skill: ${outcome} -> difficulty ${next.difficulty}, streak ${next.streak}`)
 }
 
-async function nextQuestion($: EngineInterface): Promise<Question> {
+async function nextQuestion($: EngineInterface): Promise<Question | undefined> {
   const s = await loadSkill($)
-  // The newest question at or below your difficulty; questions above it wait
-  const taken = await withQueue($, async queue => {
+  const known = new Set((await loadAnswered($)).map(said))
+  // The newest question at or below your difficulty; questions above it wait,
+  // and questions already answered right are dropped
+  const taken = await withQueue($, async all => {
+    const queue = all.filter(q => !known.has(said(q.prompt)))
     const i = queue.findIndex(q => fits(q, s))
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
-  return shuffle(taken ?? SEEDS[random(SEEDS.length)]!)
+  const seeds = SEEDS.filter(q => !known.has(said(q.prompt)))
+  const question = taken ?? seeds[random(seeds.length)]
+  return question && shuffle(question)
 }
 
 const newRound = async ($: EngineInterface) => {
   const question = await nextQuestion($)
-  debug($, `round: ${question.id} ${question.file ?? '(seed)'}`)
-  await update($, round, () => ({ question, guess: null }))
+  debug($, `round: ${question ? `${question.id} ${question.file ?? '(seed)'}` : '(none left)'}`)
+  await update($, round, () => (question ? { question, guess: null } : null))
 }
 
 // Files Claude has read this session, waiting to be turned into questions
@@ -149,27 +179,32 @@ const FORMAT = `Each question must have exactly 4 choices and exactly one correc
 Reply with JSON only, no prose and no code fence:
 [{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "file": "<path of the file it is about, relative to the repo root>"}]`
 
-const avoiding = (queue: Question[]) =>
-  queue.length === 0 ? '' : `\n\nDon't repeat these questions:\n${queue.map(q => `- ${q.prompt}`).join('\n')}`
+// Questions waiting in the queue, and ones already answered right
+const avoiding = (queue: Question[], answered: string[]) => {
+  const prompts = [...queue.map(q => q.prompt), ...answered.slice(-AVOID_MAX)]
+  return prompts.length === 0 ? '' : `\n\nDon't repeat these questions:\n${prompts.map(p => `- ${p}`).join('\n')}`
+}
 
 const aimAt = (difficulty: number) =>
   `Difficulty: ${difficulty} of ${DIFFICULTY_MAX}, ${DIFFICULTIES[difficulty]}. Keep every question at this difficulty.`
 
-const FILE_PROMPT = (file: string, difficulty: number, queue: Question[]) => `You write quiz questions that help a developer learn the codebase they work in.
+const HISTORY = 'You may run `git log`, `git show` and `git blame` to see how and why the code got this way.'
 
-Read ${file} and write 2 multiple-choice questions about what it does or how it fits together.
+const FILE_PROMPT = (file: string, difficulty: number, avoid: string) => `You write quiz questions that help a developer learn the codebase they work in.
 
-${aimAt(difficulty)}
-
-${FORMAT}${avoiding(queue)}`
-
-const REPO_PROMPT = (difficulty: number, queue: Question[]) => `You write quiz questions that help a developer learn the codebase they work in, which is the current directory.
-
-Look around the repository (read at most 5 files), then write 4 multiple-choice questions: some about the overall architecture (what lives where, how the parts connect) and some about specific code.
+Read ${file} and write 2 multiple-choice questions about what it does or how it fits together. ${HISTORY}
 
 ${aimAt(difficulty)}
 
-${FORMAT}${avoiding(queue)}`
+${FORMAT}${avoid}`
+
+const REPO_PROMPT = (difficulty: number, avoid: string) => `You write quiz questions that help a developer learn the codebase they work in, which is the current directory.
+
+Look around the repository (read at most 5 files), then write 4 multiple-choice questions: some about the overall architecture (what lives where, how the parts connect) and some about specific code. ${HISTORY}
+
+${aimAt(difficulty)}
+
+${FORMAT}${avoid}`
 
 function parseQuestions(text: string, difficulty: number, file?: string): Question[] {
   const start = text.indexOf('[')
@@ -208,7 +243,9 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
   })
 }
 
-// Hardcoded to the claude CLI for now; other backends can come later
+// Hardcoded to the claude CLI for now; other backends can come later.
+// Bash is limited to reading git history: dontAsk refuses anything not allowed here,
+// whatever permission mode the user's settings default to
 async function askClaude($: EngineInterface, prompt: string, root: string): Promise<string> {
   const { exitCode, stdout, stderr } = await $.process.run(
     [
@@ -218,7 +255,13 @@ async function askClaude($: EngineInterface, prompt: string, root: string): Prom
       '--model',
       MODEL,
       '--tools',
-      'Read,Grep,Glob',
+      'Read,Grep,Glob,Bash',
+      '--allowedTools',
+      'Bash(git log:*)',
+      'Bash(git show:*)',
+      'Bash(git blame:*)',
+      '--permission-mode',
+      'dontAsk',
       '--setting-sources',
       'user',
       '--strict-mcp-config',
@@ -388,6 +431,7 @@ async function fileIssue($: EngineInterface) {
 async function generate($: EngineInterface) {
   if (isGenerating || Date.now() < retryAt) return
   const queue = await loadQueue($)
+  const answered = await loadAnswered($)
   const s = await loadSkill($)
   // A file Claude read comes first; otherwise top up with questions about the repo
   // whenever too few are at or below your difficulty
@@ -401,8 +445,11 @@ async function generate($: EngineInterface) {
   const label = shown ?? 'repo'
   try {
     debug($, `generate ${label} at difficulty ${difficulty}: asking claude`)
-    const reply = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, queue) : REPO_PROMPT(difficulty, queue), root)
-    const questions = parseQuestions(reply, difficulty, shown)
+    const avoid = avoiding(queue, answered)
+    const reply = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid), root)
+    // The avoid list is only a request, so drop any repeat of a question answered right
+    const known = new Set(answered.map(said))
+    const questions = parseQuestions(reply, difficulty, shown).filter(q => !known.has(said(q.prompt)))
     debug($, `generate ${label}: ${questions.length} questions`)
     if (questions.length > 0) {
       await withQueue($, async current => [[...questions, ...current], undefined])
@@ -485,7 +532,7 @@ export const register: Register = on => {
     )
 
     if (current === null) {
-      return frame(<Text dimColor>No question yet.</Text>)
+      return frame(<Text dimColor>No new question yet. More are on the way.</Text>)
     }
 
     const { question, guess, chat, issue } = current
@@ -497,6 +544,7 @@ export const register: Register = on => {
       const isRight = i === question.answer
       const wasHelped = chat?.some(m => m.from === 'you') ?? false
       await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
+      await (isRight ? remember($, question) : requeue($, question))
       // The pressed choice is gone; put the ring on Next so Enter moves on
       await $.ui.focus({ requestId: PANE, key: 'next' }).catch(() => undefined)
     }

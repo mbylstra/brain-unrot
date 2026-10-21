@@ -50,14 +50,17 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   the footer shows where it went, and filing never touches your difficulty.
   Hidden on mobile too.
 - **Questions come from the `claude` CLI**, hardcoded for now:
-  `claude -p <prompt> --model haiku --tools Read,Grep,Glob` run from the
-  repo root. A `$.clock.every` timer (every 3 seconds) runs one generation
+  `claude -p <prompt> --model haiku --tools Read,Grep,Glob,Bash` run from
+  the repo root. Bash is limited to `git log`, `git show` and `git blame`
+  (`--allowedTools`, with `--permission-mode dontAsk` refusing everything
+  else), so it can use commit history. A `$.clock.every` timer (every 3 seconds) runs one generation
   at a time, so it outlives the hook that asked for it.
   - Each file Claude reads (a `tool.call` hook on `Read`) gets a call for
     2 questions about that file.
   - When fewer than 5 cached questions are at or below your difficulty, it asks
     for 4 questions about the repo as a whole.
-  - Cached questions are sent along so it doesn't repeat them.
+  - Cached questions, and the last 50 answered right, are sent along so it
+    doesn't repeat them; a repeat of one answered right is dropped anyway.
   - After a failure it waits 60 seconds before trying again.
 - **The child process is kept quiet.** It runs with `BRAIN_UNROT_CHILD=1`,
   which switches the plugin off there, and `--setting-sources user` so the
@@ -66,13 +69,18 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   index, or the question is dropped. Choices are shuffled when shown.
 - **Storage** is `$.store`, per repo root: `queue:<root>` (the question
   queue) holds up to 30 cached questions, newest first, each removed once
-  shown; `skill:<root>` holds your difficulty and streak. Data stored before
+  shown; `skill:<root>` holds your difficulty and streak; `answered:<root>`
+  holds the last 200 prompts answered right. Data stored before
   the rename, under `pantry:<root>` and with `level` fields, is still read.
 - **Difficulty** is a 1–5 staircase starting at 1: 3 right in a row moves
   up 1, a wrong answer moves down ½, and "Absolutely no idea" moves down 1.
   Generation asks for your current difficulty, with a one-line description
   of each difficulty, and tags each question with it. The footer shows the
   difficulty and how many questions are ready.
+- **No repeats**: a question answered right (matched by prompt) is never
+  asked again, seeds included; once every seed is answered and nothing is
+  ready, the pane says so. A question answered wrong, or with "no idea", goes
+  to the back of the queue to come round again.
 - **Seeds**: 6 easy hand-written questions in `plugin/hooks/seeds.ts`.
 - **Tests**: `plugin/tests/quiz.test.tsx`, run with
   `claude plugin test plugin`.

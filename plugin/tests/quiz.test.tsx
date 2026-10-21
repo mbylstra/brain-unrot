@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { SEEDS } from '../hooks/seeds'
+
 const PANE = {
   plugin: 'brain-unrot',
   component: 'Pane',
@@ -84,6 +86,14 @@ test('a warm-up question shows at once, and the queue fills with repo questions'
   expect(calls[0]!.argv.slice(0, 2)).toEqual(['claude', '-p'])
   expect(calls[0]!.argv[2]).toContain('Look around the repository')
   expect(calls[0]!.env).toEqual({ BRAIN_UNROT_CHILD: '1' })
+  // It may read git history, and nothing else through Bash
+  const argv = calls[0]!.argv
+  expect(argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--permission-mode'))).toEqual([
+    'Bash(git log:*)',
+    'Bash(git show:*)',
+    'Bash(git blame:*)',
+  ])
+  expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('dontAsk')
   expect(await ui.find({ type: 'Text', text: /1 generated questions ready/ })).toBeTruthy()
 
   await ui.press({ key: 'choice-0' })
@@ -267,5 +277,53 @@ test('an issue you describe is rephrased and written to docs/issues/todo', async
   await clock.advance(1000)
   expect(written).toHaveLength(2)
   expect(written[1]!.path).toMatch(/clearer-2\.md$/)
+  await ui.unmount()
+})
+
+test('a question answered right is not asked again, and generation is told to avoid it', async ($, on) => {
+  const known = { ...FILLER, id: 'known', prompt: 'Which folder holds the tests?', choices: ['right one', 'b', 'c', 'd'] }
+  const seeds = SEEDS.map(q => q.prompt)
+  const { clock, calls } = world(on, { 'queue:/repo': [known], 'answered:/repo': seeds })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: (await ui.find({ type: 'Button', text: /right one/ }))!.key! })
+  expect(await ui.find({ type: 'Text', text: /Correct!/ })).toBeTruthy()
+
+  // Every seed question is answered too, so there's nothing left to ask yet
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /No new question yet/ })).toBeTruthy()
+
+  await clock.advance(3000)
+  expect(calls[0]!.argv[2]).toMatch(/Don't repeat these questions:\n(- .*\n)*- Which folder holds the tests\?$/)
+  expect(await ui.find({ type: 'Text', text: /1 generated questions ready/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a regenerated question you already answered right is dropped', async ($, on) => {
+  const { clock } = world(on, { 'answered:/repo': ['What does `loadConfig` return when the file is missing?'] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /0 generated questions ready/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a question answered wrong comes round again', async ($, on) => {
+  const known = { ...FILLER, id: 'known', choices: ['right one', 'b', 'c', 'd'] }
+  const { clock } = world(on, { 'queue:/repo': [known] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: (await ui.find({ type: 'Button', text: /\. b$/ }))!.key! })
+  expect(await ui.find({ type: 'Text', text: /Wrong/ })).toBeTruthy()
+
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /Filler\?/ })).toBeTruthy()
   await ui.unmount()
 })
