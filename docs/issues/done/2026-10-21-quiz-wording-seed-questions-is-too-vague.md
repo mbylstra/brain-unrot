@@ -4,7 +4,7 @@ The quiz question asks "Which file holds the seed questions shown before anythin
 
 **Where:** the prompt text of this quiz question. The answer is correct: `SEEDS` in `plugin/hooks/seeds.ts` is the fallback list shown while the queue is empty.
 
-**Suggested change:** reword the prompt to say "see questions" in place of "seed questions", so it no longer depends on the term "seed".
+**Suggested change:** say "seed questions" in place of the bare "seeds". (The original note's "see questions" was a typo for "seed questions".)
 
 ## Context
 
