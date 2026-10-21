@@ -488,7 +488,7 @@ async function generate($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Inside the claude process that generates questions, stay out of the way.
-    // This is DISABLE_PLUGIN_ENV from claude.ts; $.env.get needs the name spelled out
+    // This is DISABLE_PLUGIN_ENV_VAR from claude.ts; $.env.get needs the name spelled out
     isChild = (await $.env.get('BRAIN_UNROT_CHILD')) !== undefined
     if (isChild) return next(e)
     const result = await next(e)
