@@ -6,8 +6,8 @@ export type Question = {
   explanation: string
   // The file it was generated from; absent on seed questions
   file?: string
-  // The difficulty it was generated at; absent on seed questions (level 1)
-  level?: number
+  // The difficulty it was generated at; absent on seed questions (difficulty 1)
+  difficulty?: number
 }
 
 // One turn of a clarifying discussion about the question
@@ -29,7 +29,7 @@ export type Round = {
 // An issue waiting to be rephrased and written to docs/issues/todo/, with the question it came up on
 export type Issue = { text: string; question: Question }
 
-export type Skill = { level: number; streak: number }
+export type Skill = { difficulty: number; streak: number }
 
 declare module 'claude-code' {
   interface PluginState {

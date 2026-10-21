@@ -28,7 +28,7 @@ How it works today:
 Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
 
 - **The pane shows a question as soon as you submit a prompt.** It takes
-  the newest cached question at or below your level, or a seed question
+  the newest cached question at or below your difficulty, or a seed question
   when none is ready. Press 1–4 to answer, or 5 for "Absolutely no idea".
   The pane then shows the answer, a one-line explanation and the file the
   question came from, and focus moves to "Next question" (or press `n`).
@@ -38,7 +38,7 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   1-second `$.clock.every` timer that runs the same `claude` CLI call, and
   it's dropped if you've moved on. Up/Down leave the box: pick a choice to
   answer, or "Skip this question" (`s`) to move on without changing your
-  level. A right answer after a discussion doesn't move your level either;
+  difficulty. A right answer after a discussion doesn't move it either;
   a wrong one still steps it down. Hidden on mobile, which has no text box.
 - **Press 7 to suggest an improvement or file a bug**, before or after
   answering (questions often expose a confusing name or a bug). You
@@ -47,7 +47,7 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   `docs/issues/todo/<date>-<slug>.md` under the repo root, with the quiz
   question and your original words appended. If the rephrasing fails it
   files your words as written. The write happens even if you've moved on,
-  the footer shows where it went, and filing never touches your level.
+  the footer shows where it went, and filing never touches your difficulty.
   Hidden on mobile too.
 - **Questions come from the `claude` CLI**, hardcoded for now:
   `claude -p <prompt> --model haiku --tools Read,Grep,Glob` run from the
@@ -55,7 +55,7 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   at a time, so it outlives the hook that asked for it.
   - Each file Claude reads (a `tool.call` hook on `Read`) gets a call for
     2 questions about that file.
-  - When fewer than 5 cached questions are at or below your level, it asks
+  - When fewer than 5 cached questions are at or below your difficulty, it asks
     for 4 questions about the repo as a whole.
   - Cached questions are sent along so it doesn't repeat them.
   - After a failure it waits 60 seconds before trying again.
@@ -64,14 +64,15 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   plugin's local-scope install isn't loaded.
 - **Questions are checked**: exactly 4 distinct choices and a valid answer
   index, or the question is dropped. Choices are shuffled when shown.
-- **Storage** is `$.store`, per repo root: `pantry:<root>` holds up to 30
-  cached questions, newest first, each removed once shown; `skill:<root>`
-  holds your level and streak.
+- **Storage** is `$.store`, per repo root: `queue:<root>` (the question
+  queue) holds up to 30 cached questions, newest first, each removed once
+  shown; `skill:<root>` holds your difficulty and streak. Data stored before
+  the rename, under `pantry:<root>` and with `level` fields, is still read.
 - **Difficulty** is a 1–5 staircase starting at 1: 3 right in a row moves
   up 1, a wrong answer moves down ½, and "Absolutely no idea" moves down 1.
-  Generation asks for your current level, with a one-line description of
-  each level, and tags each question with it. The footer shows the level
-  and how many questions are ready.
+  Generation asks for your current difficulty, with a one-line description
+  of each difficulty, and tags each question with it. The footer shows the
+  difficulty and how many questions are ready.
 - **Seeds**: 6 easy hand-written questions in `plugin/hooks/seeds.ts`.
 - **Tests**: `plugin/tests/quiz.test.tsx`, run with
   `claude plugin test plugin`.
@@ -269,17 +270,17 @@ time and cached.
 - **`$.store`** holds the cache, and **`$.clock.after` / `every`** can
   schedule refills.
 
-### Design: a stocked pantry plus a fast lane
+### Design: a stocked question queue plus a fast lane
 
-1. **The pantry is long-lived questions**, stored in `$.store` and grouped
-   by `(topic, level)`. Keep about 3 ready questions for each bucket at the
-   user's current level, one below and one above, so the next question is
+1. **The question queue is long-lived questions**, stored in `$.store` and grouped
+   by `(topic, difficulty)`. Keep about 3 ready questions for each bucket at the
+   user's current difficulty, one below and one above, so the next question is
    ready wherever the staircase moves. This covers general knowledge,
    architecture and LLM-usage questions, which are still good next session.
 2. **The fast lane is questions about what Claude is doing right now**:
    diff questions, "files Claude is touching" and the like. Start
    generating on `tool.call` events while Claude works. If a fast-lane
-   question is ready, show it; if not, show a pantry question so the pane
+   question is ready, show it; if not, show a queued question so the pane
    is never empty.
 3. **A seed bank ships with the plugin.** About 50 hand-written easy
    questions make the very first run instant too, before any generation
@@ -297,7 +298,7 @@ time and cached.
 - **Feed the generator recent question stems** so it avoids repeats, and
   dedupe by a hash of the question text.
 
-### Checking questions before they reach the pantry
+### Checking questions before they reach the queue
 
 Generated questions are cheap, but wrong ones destroy trust.
 

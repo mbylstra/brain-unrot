@@ -69,7 +69,7 @@ function world(on: On, store: Record<string, unknown> = {}, env: Record<string, 
   return { clock, calls, opened, written }
 }
 
-test('a warm-up question shows at once, and the pantry fills with repo questions', async ($, on) => {
+test('a warm-up question shows at once, and the queue fills with repo questions', async ($, on) => {
   const { clock, calls } = world(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
@@ -78,7 +78,7 @@ test('a warm-up question shows at once, and the pantry fills with repo questions
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Warm-up question/ })).toBeTruthy()
 
-  // The pantry is low, so the next tick asks claude about the repo as a whole
+  // The queue is low, so the next tick asks claude about the repo as a whole
   await clock.advance(3000)
   expect(calls).toHaveLength(1)
   expect(calls[0]!.argv.slice(0, 2)).toEqual(['claude', '-p'])
@@ -95,9 +95,9 @@ test('a warm-up question shows at once, and the pantry fills with repo questions
   await ui.unmount()
 })
 
-test('a file Claude reads becomes questions, even with a full pantry', async ($, on) => {
-  const pantry = Array.from({ length: 5 }, (_, i) => ({ ...FILLER, id: `filler-${i}` }))
-  const { clock, calls } = world(on, { 'pantry:/repo': pantry })
+test('a file Claude reads becomes questions, even with a full queue', async ($, on) => {
+  const queue = Array.from({ length: 5 }, (_, i) => ({ ...FILLER, id: `filler-${i}` }))
+  const { clock, calls } = world(on, { 'queue:/repo': queue })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await clock.advance(3000)
@@ -107,6 +107,19 @@ test('a file Claude reads becomes questions, even with a full pantry', async ($,
   await clock.advance(3000)
   expect(calls).toHaveLength(1)
   expect(calls[0]!.argv[2]).toContain('Read src/config.ts')
+})
+
+test('a queue and difficulty stored under the old names still load', async ($, on) => {
+  const known = { ...FILLER, id: 'known', prompt: 'An old question?', level: 2 }
+  const { clock } = world(on, { 'skill:/repo': { level: 2, streak: 1 }, 'pantry:/repo': [known] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /An old question\?/ })).toBeTruthy()
+  await ui.unmount()
 })
 
 test('inside the generating claude process the plugin stays quiet', async ($, on) => {
@@ -120,28 +133,28 @@ test('inside the generating claude process the plugin stays quiet', async ($, on
   expect(opened).toEqual([])
 })
 
-test('"Absolutely no idea" reveals the answer and steps the level down', async ($, on) => {
-  const { clock, calls } = world(on, { 'skill:/repo': { level: 3, streak: 2 } })
+test('"Absolutely no idea" reveals the answer and steps the difficulty down', async ($, on) => {
+  const { clock, calls } = world(on, { 'skill:/repo': { difficulty: 3, streak: 2 } })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Level 3 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 3 of 5/ })).toBeTruthy()
 
   await ui.press({ key: 'no-idea' })
   expect(await ui.find({ type: 'Text', text: /No worries — it was/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /Level 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
 
-  // The next questions are asked for at the new level
+  // The next questions are asked for at the new difficulty
   await clock.advance(3000)
-  expect(calls[0]!.argv[2]).toContain('level 2 of 5')
+  expect(calls[0]!.argv[2]).toContain('Difficulty: 2 of 5')
   await ui.unmount()
 })
 
 test('a clarifying question opens a discussion, and you can then answer or skip', async ($, on) => {
-  const known = { ...FILLER, id: 'known', choices: ['right one', 'b', 'c', 'd'], level: 1 }
-  const { clock, calls } = world(on, { 'skill:/repo': { level: 2, streak: 2 }, 'pantry:/repo': [known] })
+  const known = { ...FILLER, id: 'known', choices: ['right one', 'b', 'c', 'd'], difficulty: 1 }
+  const { clock, calls } = world(on, { 'skill:/repo': { difficulty: 2, streak: 2 }, 'queue:/repo': [known] })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
@@ -164,14 +177,14 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   expect(await ui.find({ type: 'Markdown', text: /no file to read/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Claude is thinking/ })).toBeFalsy()
 
-  // Answering after a discussion reveals the answer; a right one doesn't move the level
+  // Answering after a discussion reveals the answer; a right one doesn't move the difficulty
   const right = await ui.find({ type: 'Button', text: /right one/ })
   await ui.press({ key: right!.key! })
   expect(await ui.find({ type: 'Text', text: /Correct!/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /Level 2 of 5/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Difficulty 2 of 5/ })).toBeTruthy()
   await ui.press({ key: 'next' })
 
-  // Skipping moves straight on to the next question, level unchanged
+  // Skipping moves straight on to the next question, difficulty unchanged
   await ui.press({ key: 'ask' })
   expect(await ui.find({ key: 'skip' })).toBeTruthy()
   await ui.press({ key: 'skip' })
@@ -181,8 +194,8 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
 })
 
 test('an issue you describe is rephrased and written to docs/issues/todo', async ($, on) => {
-  const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', file: 'src/config.ts', level: 1 }
-  const { clock, calls, written } = world(on, { 'skill:/repo': { level: 2, streak: 2 }, 'pantry:/repo': [known] })
+  const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', file: 'src/config.ts', difficulty: 1 }
+  const { clock, calls, written } = world(on, { 'skill:/repo': { difficulty: 2, streak: 2 }, 'queue:/repo': [known] })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
@@ -198,7 +211,7 @@ test('an issue you describe is rephrased and written to docs/issues/todo', async
 
   // Answer first: the reveal is where a bad name usually shows up
   await ui.press({ key: 'choice-0' })
-  const levelBefore = (await ui.find({ type: 'Text', text: /Level \d of 5/ }))?.text
+  const difficultyBefore = (await ui.find({ type: 'Text', text: /Difficulty \d of 5/ }))?.text
   await ui.press({ key: 'report' })
   await ui.input({ key: 'issue', text: 'x is a terrible name' })
   expect(await ui.find({ type: 'Text', text: /Filing the issue/ })).toBeTruthy()
@@ -218,8 +231,8 @@ test('an issue you describe is rephrased and written to docs/issues/todo', async
   expect(issue!.text).toContain('about `src/config.ts`')
   expect(await ui.find({ type: 'Text', text: /Filed docs\/issues\/todo\// })).toBeTruthy()
 
-  // Filing doesn't move the level, and a second issue with the same title gets its own file
-  expect((await ui.find({ type: 'Text', text: /Level \d of 5/ }))?.text).toBe(levelBefore)
+  // Filing doesn't move the difficulty, and a second issue with the same title gets its own file
+  expect((await ui.find({ type: 'Text', text: /Difficulty \d of 5/ }))?.text).toBe(difficultyBefore)
   await ui.press({ key: 'report' })
   await ui.input({ key: 'issue', text: 'still a terrible name' })
   await clock.advance(1000)

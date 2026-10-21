@@ -6,9 +6,9 @@ import { SEEDS } from './seeds'
 
 const PANE = 'brain-unrot'
 const MODEL = 'haiku'
-const PANTRY_MAX = 30
+const QUEUE_MAX = 30
 // Below this many ready questions, generate some about the repo as a whole
-const PANTRY_LOW = 5
+const QUEUE_LOW = 5
 const TICK_MS = 3000
 // How often to check for a clarifying question waiting for a reply, or an issue to file
 const CHAT_TICK_MS = 1000
@@ -18,12 +18,12 @@ const RETRY_MS = 60_000
 const CHILD_ENV = 'BRAIN_UNROT_CHILD'
 // The guess recorded for "Absolutely no idea"
 const NO_IDEA = -1
-const LEVEL_MIN = 1
-const LEVEL_MAX = 5
-// Right answers in a row that move you up a level
+const DIFFICULTY_MIN = 1
+const DIFFICULTY_MAX = 5
+// Right answers in a row that move the difficulty up one
 const STREAK_UP = 3
 
-const LEVELS: Record<number, string> = {
+const DIFFICULTIES: Record<number, string> = {
   1: 'extremely easy: answerable from names alone, e.g. which folder holds the tests, what a file is for',
   2: 'easy: what a function returns, what a constant is for',
   3: 'medium: how two parts connect, which case a branch handles',
@@ -33,7 +33,7 @@ const LEVELS: Record<number, string> = {
 
 const round = atom({ plugin: 'brain-unrot', key: 'round' } as const, null as Round | null)
 const ready = atom({ plugin: 'brain-unrot', key: 'ready' } as const, 0)
-const skill = atom({ plugin: 'brain-unrot', key: 'skill' } as const, { level: LEVEL_MIN, streak: 0 } as Skill)
+const skill = atom({ plugin: 'brain-unrot', key: 'skill' } as const, { difficulty: DIFFICULTY_MIN, streak: 0 } as Skill)
 // A line in the footer about the last issue filed, e.g. where it was written
 const notice = atom({ plugin: 'brain-unrot', key: 'notice' } as const, null as string | null)
 
@@ -60,25 +60,32 @@ function shuffle(q: Question): Question {
   return { ...q, choices: order.map(i => q.choices[i]!), answer: order.indexOf(q.answer) }
 }
 
-// The pantry: generated questions kept in $.store per project, newest first
-const pantryKey = async ($: EngineInterface) => `pantry:${await $.session.root()}`
+// The question queue: generated questions kept in $.store per project, newest first
+const queueKey = async ($: EngineInterface) => `queue:${await $.session.root()}`
 
-async function loadPantry($: EngineInterface): Promise<Question[]> {
-  const stored = await $.store.get(await pantryKey($))
-  return Array.isArray(stored) ? (stored as Question[]) : []
+// Before the rename: the queue was stored as `pantry:<root>` and difficulty as `level`
+type Legacy = { level?: number }
+const legacyKey = async ($: EngineInterface) => `pantry:${await $.session.root()}`
+
+async function loadQueue($: EngineInterface): Promise<Question[]> {
+  const stored = (await $.store.get(await queueKey($))) ?? (await $.store.get(await legacyKey($)))
+  if (!Array.isArray(stored)) return []
+  return (stored as (Question & Legacy)[]).map(({ level, ...q }) =>
+    q.difficulty === undefined && level !== undefined ? { ...q, difficulty: level } : q,
+  )
 }
 
-async function savePantry($: EngineInterface, pantry: Question[]) {
-  await $.store.set(await pantryKey($), pantry.slice(0, PANTRY_MAX))
-  await update($, ready, () => Math.min(pantry.length, PANTRY_MAX))
+async function saveQueue($: EngineInterface, queue: Question[]) {
+  await $.store.set(await queueKey($), queue.slice(0, QUEUE_MAX))
+  await update($, ready, () => Math.min(queue.length, QUEUE_MAX))
 }
 
-// One pantry write at a time: the generator and the pane both take from it
+// One queue write at a time: the generator and the pane both take from it
 let lock: Promise<unknown> = Promise.resolve()
-function withPantry<T>($: EngineInterface, fn: (pantry: Question[]) => Promise<[Question[], T]>): Promise<T> {
+function withQueue<T>($: EngineInterface, fn: (queue: Question[]) => Promise<[Question[], T]>): Promise<T> {
   const run = lock.then(async () => {
-    const [next, result] = await fn(await loadPantry($))
-    await savePantry($, next)
+    const [next, result] = await fn(await loadQueue($))
+    await saveQueue($, next)
     return result
   })
   lock = run.catch(() => undefined)
@@ -88,38 +95,39 @@ function withPantry<T>($: EngineInterface, fn: (pantry: Question[]) => Promise<[
 // Skill: a 3-up staircase per project; a wrong answer or "no idea" steps down
 const skillKey = async ($: EngineInterface) => `skill:${await $.session.root()}`
 
-const levelOf = (s: Skill) => Math.floor(s.level)
-const fits = (q: Question, s: Skill) => (q.level ?? LEVEL_MIN) <= levelOf(s)
+const difficultyOf = (s: Skill) => Math.floor(s.difficulty)
+const fits = (q: Question, s: Skill) => (q.difficulty ?? DIFFICULTY_MIN) <= difficultyOf(s)
 
 async function loadSkill($: EngineInterface): Promise<Skill> {
-  const stored = (await $.store.get(await skillKey($))) as Skill | undefined
-  return typeof stored?.level === 'number' ? stored : { level: LEVEL_MIN, streak: 0 }
+  const stored = (await $.store.get(await skillKey($))) as (Partial<Skill> & Legacy) | undefined
+  const difficulty = stored?.difficulty ?? stored?.level
+  return typeof difficulty === 'number' ? { difficulty, streak: stored?.streak ?? 0 } : { difficulty: DIFFICULTY_MIN, streak: 0 }
 }
 
-// `helped` is a right answer after a clarifying discussion: it doesn't move the level
+// `helped` is a right answer after a clarifying discussion: it doesn't move the difficulty
 type Outcome = 'right' | 'wrong' | 'no-idea' | 'helped'
 
 function stepped(s: Skill, outcome: Outcome): Skill {
-  const clamp = (n: number) => Math.min(LEVEL_MAX, Math.max(LEVEL_MIN, n))
-  if (outcome === 'no-idea') return { level: clamp(s.level - 1), streak: 0 }
-  if (outcome === 'wrong') return { level: clamp(s.level - 0.5), streak: 0 }
+  const clamp = (n: number) => Math.min(DIFFICULTY_MAX, Math.max(DIFFICULTY_MIN, n))
+  if (outcome === 'no-idea') return { difficulty: clamp(s.difficulty - 1), streak: 0 }
+  if (outcome === 'wrong') return { difficulty: clamp(s.difficulty - 0.5), streak: 0 }
   if (outcome === 'helped') return s
-  return s.streak + 1 >= STREAK_UP ? { level: clamp(s.level + 1), streak: 0 } : { ...s, streak: s.streak + 1 }
+  return s.streak + 1 >= STREAK_UP ? { difficulty: clamp(s.difficulty + 1), streak: 0 } : { ...s, streak: s.streak + 1 }
 }
 
 async function record($: EngineInterface, outcome: Outcome) {
   const next = stepped(await loadSkill($), outcome)
   await $.store.set(await skillKey($), next)
   await update($, skill, () => next)
-  debug($, `skill: ${outcome} -> level ${next.level}, streak ${next.streak}`)
+  debug($, `skill: ${outcome} -> difficulty ${next.difficulty}, streak ${next.streak}`)
 }
 
 async function nextQuestion($: EngineInterface): Promise<Question> {
   const s = await loadSkill($)
-  // The newest question at or below your level; questions above it wait
-  const taken = await withPantry($, async pantry => {
-    const i = pantry.findIndex(q => fits(q, s))
-    return i < 0 ? [pantry, undefined] : [pantry.filter((_, j) => j !== i), pantry[i]]
+  // The newest question at or below your difficulty; questions above it wait
+  const taken = await withQueue($, async queue => {
+    const i = queue.findIndex(q => fits(q, s))
+    return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
   return shuffle(taken ?? SEEDS[random(SEEDS.length)]!)
 }
@@ -141,29 +149,29 @@ const FORMAT = `Each question must have exactly 4 choices and exactly one correc
 Reply with JSON only, no prose and no code fence:
 [{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "file": "<path of the file it is about, relative to the repo root>"}]`
 
-const avoiding = (pantry: Question[]) =>
-  pantry.length === 0 ? '' : `\n\nDon't repeat these questions:\n${pantry.map(q => `- ${q.prompt}`).join('\n')}`
+const avoiding = (queue: Question[]) =>
+  queue.length === 0 ? '' : `\n\nDon't repeat these questions:\n${queue.map(q => `- ${q.prompt}`).join('\n')}`
 
-const difficulty = (level: number) =>
-  `Difficulty: level ${level} of ${LEVEL_MAX}, ${LEVELS[level]}. Keep every question at this level.`
+const aimAt = (difficulty: number) =>
+  `Difficulty: ${difficulty} of ${DIFFICULTY_MAX}, ${DIFFICULTIES[difficulty]}. Keep every question at this difficulty.`
 
-const FILE_PROMPT = (file: string, level: number, pantry: Question[]) => `You write quiz questions that help a developer learn the codebase they work in.
+const FILE_PROMPT = (file: string, difficulty: number, queue: Question[]) => `You write quiz questions that help a developer learn the codebase they work in.
 
 Read ${file} and write 2 multiple-choice questions about what it does or how it fits together.
 
-${difficulty(level)}
+${aimAt(difficulty)}
 
-${FORMAT}${avoiding(pantry)}`
+${FORMAT}${avoiding(queue)}`
 
-const REPO_PROMPT = (level: number, pantry: Question[]) => `You write quiz questions that help a developer learn the codebase they work in, which is the current directory.
+const REPO_PROMPT = (difficulty: number, queue: Question[]) => `You write quiz questions that help a developer learn the codebase they work in, which is the current directory.
 
 Look around the repository (read at most 5 files), then write 4 multiple-choice questions: some about the overall architecture (what lives where, how the parts connect) and some about specific code.
 
-${difficulty(level)}
+${aimAt(difficulty)}
 
-${FORMAT}${avoiding(pantry)}`
+${FORMAT}${avoiding(queue)}`
 
-function parseQuestions(text: string, level: number, file?: string): Question[] {
+function parseQuestions(text: string, difficulty: number, file?: string): Question[] {
   const start = text.indexOf('[')
   const end = text.lastIndexOf(']')
   if (start < 0 || end < start) return []
@@ -194,7 +202,7 @@ function parseQuestions(text: string, level: number, file?: string): Question[] 
         answer: q.answer,
         explanation: typeof q.explanation === 'string' ? q.explanation : '',
         file: about,
-        level,
+        difficulty,
       },
     ]
   })
@@ -370,25 +378,25 @@ async function fileIssue($: EngineInterface) {
 
 async function generate($: EngineInterface) {
   if (isGenerating || Date.now() < retryAt) return
-  const pantry = await loadPantry($)
+  const queue = await loadQueue($)
   const s = await loadSkill($)
   // A file Claude read comes first; otherwise top up with questions about the repo
-  // whenever too few are at or below your level
+  // whenever too few are at or below your difficulty
   const file = pending.shift()
-  if (file === undefined && pantry.filter(q => fits(q, s)).length >= PANTRY_LOW) return
-  const level = levelOf(s)
+  if (file === undefined && queue.filter(q => fits(q, s)).length >= QUEUE_LOW) return
+  const difficulty = difficultyOf(s)
 
   isGenerating = true
   const root = await $.session.root()
   const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
   const label = shown ?? 'repo'
   try {
-    debug($, `generate ${label} at level ${level}: asking claude`)
-    const reply = await askClaude($, shown ? FILE_PROMPT(shown, level, pantry) : REPO_PROMPT(level, pantry), root)
-    const questions = parseQuestions(reply, level, shown)
+    debug($, `generate ${label} at difficulty ${difficulty}: asking claude`)
+    const reply = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, queue) : REPO_PROMPT(difficulty, queue), root)
+    const questions = parseQuestions(reply, difficulty, shown)
     debug($, `generate ${label}: ${questions.length} questions`)
     if (questions.length > 0) {
-      await withPantry($, async current => [[...questions, ...current], undefined])
+      await withQueue($, async current => [[...questions, ...current], undefined])
     } else {
       debug($, `generate ${label}: unparsed reply ${JSON.stringify(reply.slice(0, 300))}`)
     }
@@ -411,7 +419,7 @@ export const register: Register = on => {
     $.clock.every(CHAT_TICK_MS, () => discuss($))
     $.clock.every(CHAT_TICK_MS, () => fileIssue($))
     await update($, ready, () => 0)
-    void loadPantry($).then(p => update($, ready, () => p.length))
+    void loadQueue($).then(p => update($, ready, () => p.length))
     void loadSkill($).then(s => update($, skill, () => s))
     return result
   })
@@ -448,7 +456,7 @@ export const register: Register = on => {
     const Input = 'Input' in elements ? elements.Input : undefined
     const current = await read($, round)
     const readyCount = await read($, ready)
-    const { level } = await read($, skill)
+    const { difficulty } = await read($, skill)
     const status = await read($, notice)
 
     const isFocused = e.props.isFocused
@@ -462,7 +470,7 @@ export const register: Register = on => {
         {body}
         {status ? <Text dimColor>{status}</Text> : null}
         <Text dimColor>
-          Level {Math.floor(level)} of {LEVEL_MAX} · {readyCount} generated questions ready
+          Difficulty {Math.floor(difficulty)} of {DIFFICULTY_MAX} · {readyCount} generated questions ready
         </Text>
       </Box>
     )
