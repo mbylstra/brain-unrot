@@ -124,7 +124,9 @@ The "check quoted code" idea in quiz-ideas.md, applied to the web:
 - **Research is infrequent; showing is instant.** At `session.start`, if
   the digest is more than about 24 hours old, queue one lane 1 refresh
   and one lane 2 research job. They run on the existing `$.clock.every`
-  pattern, one job in flight, separate from question generation.
+  pattern, one job in flight, separate from question generation. With
+  fewer than 5 tidbits ready, research runs hourly instead, so the queue
+  doesn't stay empty for a day once it's been shown.
 - **Global storage**, since this knowledge isn't per repo: `tidbits`
   (about 40 ready, newest first), `tidbits:seen` (hashes),
   `tidbits:cursor` (the last CHANGELOG version and feed entry dates),

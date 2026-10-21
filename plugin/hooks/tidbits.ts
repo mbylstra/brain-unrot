@@ -12,6 +12,9 @@ export const RELEASES_URL = 'https://api.github.com/repos/anthropics/claude-code
 const DAY = 86_400_000
 // How often each lane runs
 const REFRESH_MS = DAY
+// With fewer than this many tidbits ready, research runs every LOW_REFRESH_MS instead
+const LOW_COUNT = 5
+const LOW_REFRESH_MS = 60 * 60_000
 // A failed run tries again after this long
 const RETRY_MS = 30 * 60_000
 const TIDBITS_MAX = 40
@@ -487,13 +490,16 @@ export async function refresh($: EngineInterface): Promise<Tidbit[]> {
   if (isRefreshing) return []
   const now = await $.clock.now()
   const cursor = await loadCursor($)
+  // The CHANGELOG only has something new after a release, so only research runs sooner
+  const researchMs = (await tidbitsReady($)) < LOW_COUNT ? LOW_REFRESH_MS : REFRESH_MS
   const lane =
     now - (cursor.changelogAt ?? -Infinity) >= REFRESH_MS
       ? 'changelogAt'
-      : now - (cursor.researchedAt ?? -Infinity) >= REFRESH_MS
+      : now - (cursor.researchedAt ?? -Infinity) >= researchMs
         ? 'researchedAt'
         : undefined
   if (!lane) return []
+  const interval = lane === 'changelogAt' ? REFRESH_MS : researchMs
 
   isRefreshing = true
   // Claimed before it runs, so another open session doesn't run it too
@@ -504,7 +510,7 @@ export async function refresh($: EngineInterface): Promise<Tidbit[]> {
     return added
   } catch (err) {
     debug($, `${lane === 'changelogAt' ? 'changelog' : 'research'}: ${String(err)}`)
-    await saveCursor($, { [lane]: now - REFRESH_MS + RETRY_MS })
+    await saveCursor($, { [lane]: now - interval + RETRY_MS })
     return []
   } finally {
     isRefreshing = false

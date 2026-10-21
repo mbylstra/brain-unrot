@@ -515,6 +515,24 @@ test('an unchanged CHANGELOG is not downloaded or sent to the model again', asyn
   expect(store['tidbits:cursor']).toMatchObject({ version: '2.1.306', changelogAt: NOW + 3000 })
 })
 
+test('research runs again within the hour when few tidbits are ready', async ($, on) => {
+  const cursor = { changelogAt: NOW, researchedAt: NOW - 2 * 60 * 60_000 }
+  const tidbits = Array.from({ length: 4 }, (_, i) => ({ ...TIP, id: `research:${i}`, headline: `Tip ${i}` }))
+  const { clock, calls } = world(on, { 'tidbits:cursor': cursor, tidbits }, {}, { now: NOW })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(3000)
+  expect(calls.some(c => c.argv.includes('--json-schema'))).toBe(true)
+})
+
+test('research waits a day while enough tidbits are ready', async ($, on) => {
+  const cursor = { changelogAt: NOW, researchedAt: NOW - 2 * 60 * 60_000 }
+  const tidbits = Array.from({ length: 5 }, (_, i) => ({ ...TIP, id: `research:${i}`, headline: `Tip ${i}` }))
+  const { clock, calls } = world(on, { 'tidbits:cursor': cursor, tidbits }, {}, { now: NOW })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(3000)
+  expect(calls.some(c => c.argv.includes('--json-schema'))).toBe(false)
+})
+
 test('research keeps only dated items whose quote is on the page', async ($, on) => {
   const filler = 'Some words about agents. '.repeat(40)
   const item = (path: string, publishedAt: string, extra: object = {}) => ({
