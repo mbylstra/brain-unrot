@@ -59,16 +59,18 @@ function shuffle(q: Question): Question {
 // The question queue: generated questions kept in $.store per project, newest first
 const queueKey = async ($: EngineInterface) => `queue:${await $.session.root()}`
 
-// Before the rename: the queue was stored as `pantry:<root>` and difficulty as `level`
-type Legacy = { level?: number }
+// Before the renames: the queue was stored as `pantry:<root>`, difficulty as `level` and sourceFile as `file`
+type Legacy = { level?: number; file?: string }
 const legacyKey = async ($: EngineInterface) => `pantry:${await $.session.root()}`
 
 async function loadQueue($: EngineInterface): Promise<Question[]> {
   const stored = (await $.store.get(await queueKey($))) ?? (await $.store.get(await legacyKey($)))
   if (!Array.isArray(stored)) return []
-  return (stored as (Question & Legacy)[]).map(({ level, ...q }) =>
-    q.difficulty === undefined && level !== undefined ? { ...q, difficulty: level } : q,
-  )
+  return (stored as (Question & Legacy)[]).map(({ level, file, ...q }) => ({
+    ...q,
+    ...(q.difficulty === undefined && level !== undefined ? { difficulty: level } : {}),
+    ...(q.sourceFile === undefined && file !== undefined ? { sourceFile: file } : {}),
+  }))
 }
 
 async function saveQueue($: EngineInterface, queue: Question[]) {
@@ -178,7 +180,7 @@ const newRound = async ($: EngineInterface) => {
     await countTips($)
     return
   }
-  debug($, `round: ${question ? `${question.id} ${question.file ?? '(seed)'}` : '(none left)'}`)
+  debug($, `round: ${question ? `${question.id} ${question.sourceFile ?? '(seed)'}` : '(none left)'}`)
   await update($, round, (): Round | null => (question ? { kind: 'question', question, guess: null } : null))
 }
 
@@ -191,7 +193,7 @@ let isChild = false
 const FORMAT = `Each question must have exactly 4 choices and exactly one correct answer, and be answerable from the code. Keep questions and choices short; put identifiers in backticks. Name things in full words, not by a bare identifier: say "the seed questions", not "the seeds".
 
 Reply with JSON only, no prose and no code fence:
-[{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "file": "<path of the file it is about, relative to the repo root>"}]`
+[{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "sourceFile": "<path of the file it is about, relative to the repo root>"}]`
 
 // Questions waiting in the queue, and ones already answered right
 const avoiding = (queue: Question[], answered: string[]) => {
@@ -242,7 +244,7 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
       q.answer >= 0 &&
       q.answer < 4
     if (!isValid) return []
-    const about = file ?? (typeof q.file === 'string' && q.file !== '' ? q.file : undefined)
+    const about = file ?? (typeof q.sourceFile === 'string' && q.sourceFile !== '' ? q.sourceFile : undefined)
     return [
       {
         id: `${about ?? 'repo'}#${Date.now()}-${i}`,
@@ -250,7 +252,7 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
         choices: q.choices,
         answer: q.answer,
         explanation: typeof q.explanation === 'string' ? q.explanation : '',
-        file: about,
+        sourceFile: about,
         difficulty,
       },
     ]
@@ -262,7 +264,7 @@ const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You
   guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
 }
 
-The question${q.file ? ` (about ${q.file})` : ''}:
+The question${q.sourceFile ? ` (about ${q.sourceFile})` : ''}:
 ${q.prompt}
 
 The choices:
@@ -340,7 +342,7 @@ ${about.tidbit.body}
 Source: ${about.tidbit.url}`
       : `A developer was answering a multiple-choice quiz question about the codebase in the current directory and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
 
-The question${about.question.file ? ` (about ${about.question.file})` : ''}:
+The question${about.question.sourceFile ? ` (about ${about.question.sourceFile})` : ''}:
 ${about.question.prompt}
 
 The choices:
@@ -424,7 +426,7 @@ async function fileIssue($: EngineInterface) {
       ...(about.kind === 'tidbit'
         ? [`Raised on a Brain Unrot "did you know" tip from ${about.tidbit.url}:`, '', `> ${about.tidbit.headline}`]
         : [
-            `Raised while answering a Brain Unrot quiz question${about.question.file ? ` about \`${about.question.file}\`` : ''}:`,
+            `Raised while answering a Brain Unrot quiz question${about.question.sourceFile ? ` about \`${about.question.sourceFile}\`` : ''}:`,
             '',
             `> ${about.question.prompt}`,
           ]),
@@ -738,7 +740,7 @@ export const register: Register = on => {
     }
 
     const { question, guess } = current
-    const source = <Text dimColor>{question.file ? `From ${question.file}` : 'Warm-up question'}</Text>
+    const source = <Text dimColor>{question.sourceFile ? `From ${question.sourceFile}` : 'Warm-up question'}</Text>
 
     const choose = (i: number) => async () => {
       debug($, `guess: ${i} (answer ${question.answer})`)

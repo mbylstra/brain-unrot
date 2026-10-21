@@ -4,8 +4,8 @@ export type Question = {
   choices: string[]
   answer: number
   explanation: string
-  // The file it was generated from; absent on seed questions
-  file?: string
+  // Path of the file it was generated from; absent on seed questions
+  sourceFile?: string
   // The difficulty it was generated at; absent on seed questions (difficulty 1)
   difficulty?: number
 }

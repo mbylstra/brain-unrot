@@ -25,7 +25,7 @@ const REPLY = JSON.stringify([
     choices: ['The defaults', 'null', 'It throws', 'An empty string'],
     answer: 0,
     explanation: 'It falls back to the defaults.',
-    file: 'src/config.ts',
+    sourceFile: 'src/config.ts',
   },
   { prompt: 'Broken question', choices: ['only two', 'choices'], answer: 0 },
 ])
@@ -37,7 +37,7 @@ const ISSUE_REPLY = JSON.stringify({
   body: 'In `src/config.ts`, `loadConfig` names its result `x`. Call it `config`.',
 })
 
-const FILLER = { prompt: 'Filler?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: '', file: 'x.ts' }
+const FILLER = { prompt: 'Filler?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: '', sourceFile: 'x.ts' }
 
 // Tidbits stay out of the way: none are shown, and both lanes ran just now
 const NO_TIDBITS = { 'tidbits:prefs': { share: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
@@ -157,8 +157,9 @@ test('a file Claude reads becomes questions, even with a full queue', async ($, 
   expect(calls[0]!.argv[2]).toContain('Read src/config.ts')
 })
 
-test('a queue and difficulty stored under the old names still load', async ($, on) => {
-  const known = { ...FILLER, id: 'known', prompt: 'An old question?', level: 2 }
+test('a queue, difficulty and source file stored under the old names still load', async ($, on) => {
+  const { sourceFile: _, ...filler } = FILLER
+  const known = { ...filler, id: 'known', prompt: 'An old question?', level: 2, file: 'old.ts' }
   const { clock } = world(on, { 'skill:/repo': { level: 2, streak: 1 }, 'pantry:/repo': [known] })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
@@ -167,6 +168,7 @@ test('a queue and difficulty stored under the old names still load', async ($, o
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Difficulty 2 out of 5/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /An old question\?/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /From old\.ts/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -299,7 +301,7 @@ test('a skipped question is not asked again', async ($, on) => {
 })
 
 test('an issue you describe is rephrased and written to docs/issues/todo', async ($, on) => {
-  const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', file: 'src/config.ts', difficulty: 1 }
+  const known = { ...FILLER, id: 'known', prompt: 'What is `x` in loadConfig?', sourceFile: 'src/config.ts', difficulty: 1 }
   const { clock, calls, written } = world(on, { 'skill:/repo': { difficulty: 2, streak: 2 }, 'queue:/repo': [known] })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
