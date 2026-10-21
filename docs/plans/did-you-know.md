@@ -116,7 +116,7 @@ The "check quoted code" idea in quiz-ideas.md, applied to the web:
 - **Check Claude Code claims locally where possible.** If a tidbit names a
   CLI flag, look for it in `claude --help`. If it names a slash command or
   setting, check the CHANGELOG text the plugin already has.
-- **Dedupe** by URL and by a normalised headline. Keep a global seen-set
+- **Dedupe** by URL and by a normalised headline. Keep a global known-set
   of tidbit hashes so the same news isn't shown twice across projects.
 
 ## Schedule, storage and cost
@@ -128,7 +128,7 @@ The "check quoted code" idea in quiz-ideas.md, applied to the web:
   fewer than 5 tidbits ready, research runs hourly instead, so the queue
   doesn't stay empty for a day once it's been shown.
 - **Global storage**, since this knowledge isn't per repo: `tidbits`
-  (about 40 ready, newest first), `tidbits:seen` (hashes),
+  (about 40 ready, newest first), `tidbits:known` (hashes of every tidbit ever queued),
   `tidbits:cursor` (the last CHANGELOG version and feed entry dates),
   `tidbits:prefs` (topic weights and the knew-it / new-to-me balance),
   `tidbits:history` (the last 500 tidbits shown, with your reaction). All

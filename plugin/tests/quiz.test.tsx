@@ -625,6 +625,22 @@ test('reactions tune later tidbits, and expired ones are never shown', async ($,
   await ui.unmount()
 })
 
+test('tidbits stored under the old seen-set name are still known', async ($, on) => {
+  const { clock, store } = world(
+    on,
+    { 'tidbits:prefs': { share: 1 }, 'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW }, 'tidbits:seen': [SEED_TIDBITS[0]!.id] },
+    {},
+    { now: NOW },
+  )
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: SEED_TIDBITS[1]!.headline })).toBeTruthy()
+  expect(store['tidbits:known']).toEqual([SEED_TIDBITS[0]!.id, SEED_TIDBITS[1]!.id])
+  await ui.unmount()
+})
+
 test('you can ask about a tidbit, with the web, and file a bug about it', async ($, on) => {
   const { clock, calls, written, store } = world(
     on,

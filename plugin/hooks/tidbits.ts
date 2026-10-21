@@ -18,7 +18,7 @@ const LOW_REFRESH_MS = 60 * 60_000
 // A failed run tries again after this long
 const RETRY_MS = 30 * 60_000
 const TIDBITS_MAX = 40
-const SEEN_MAX = 1000
+const KNOWN_MAX = 1000
 const HISTORY_MAX = 500
 const FEATURE_TTL = 42 * DAY
 const TECHNIQUE_TTL = 84 * DAY
@@ -58,7 +58,7 @@ const LEVELS: Record<number, string> = {
 }
 
 // Stored globally, since this knowledge isn't per repo
-const KEY = { tidbits: 'tidbits', seen: 'tidbits:seen', cursor: 'tidbits:cursor', prefs: 'tidbits:prefs', history: 'tidbits:history' }
+const KEY = { tidbits: 'tidbits', known: 'tidbits:known', cursor: 'tidbits:cursor', prefs: 'tidbits:prefs', history: 'tidbits:history' }
 
 // `version` and `etag` are where the CHANGELOG was last read up to; `changelogAt` and
 // `researchedAt` when each lane last ran. `firstSeen` dates releases the releases API doesn't list
@@ -75,7 +75,7 @@ type Cursor = {
 const said = (text: string) => text.trim().toLowerCase().replace(/\s+/g, ' ')
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
-// FNV-1a: keeps the seen-set small
+// FNV-1a: keeps the known-set small
 const hash = (text: string) => {
   let h = 0x811c9dc5
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
@@ -98,8 +98,10 @@ export async function loadPrefs($: EngineInterface): Promise<Prefs> {
   return { level: stored?.level ?? 2, weights: stored?.weights ?? {}, share: stored?.share ?? SHARE }
 }
 
-async function loadSeen($: EngineInterface): Promise<string[]> {
-  const stored = await $.store.get(KEY.seen)
+// Hashes of every tidbit ever queued, and the ids of seed tidbits shown, so none comes round twice.
+// It was stored as `tidbits:seen` before the rename
+async function loadKnown($: EngineInterface): Promise<string[]> {
+  const stored = (await $.store.get(KEY.known)) ?? (await $.store.get('tidbits:seen'))
   return Array.isArray(stored) ? (stored as string[]) : []
 }
 
@@ -108,16 +110,16 @@ async function loadTidbits($: EngineInterface): Promise<Tidbit[]> {
   return Array.isArray(stored) ? (stored as Tidbit[]) : []
 }
 
-// One write at a time: research and the pane both change the queue and the seen-set
+// One write at a time: research and the pane both change the queue and the known-set
 let lock: Promise<unknown> = Promise.resolve()
 function withTidbits<T>(
   $: EngineInterface,
-  fn: (tidbits: Tidbit[], seen: string[]) => Promise<[Tidbit[], string[], T]>,
+  fn: (tidbits: Tidbit[], known: string[]) => Promise<[Tidbit[], string[], T]>,
 ): Promise<T> {
   const run = lock.then(async () => {
-    const [tidbits, seen, result] = await fn(await loadTidbits($), await loadSeen($))
+    const [tidbits, known, result] = await fn(await loadTidbits($), await loadKnown($))
     await $.store.set(KEY.tidbits, tidbits.slice(0, TIDBITS_MAX))
-    await $.store.set(KEY.seen, seen.slice(-SEEN_MAX))
+    await $.store.set(KEY.known, known.slice(-KNOWN_MAX))
     return result
   })
   lock = run.catch(() => undefined)
@@ -144,15 +146,15 @@ const keysOf = (t: Tidbit) =>
   t.lane === 'seed' ? [t.id] : [hash(`h:${said(t.headline)}`), hash(t.lane === 'changelog' ? `q:${said(t.quote)}` : `u:${t.url}`)]
 
 export async function addTidbits($: EngineInterface, found: Tidbit[]): Promise<Tidbit[]> {
-  return withTidbits($, async (tidbits, seen) => {
-    const known = new Set([...seen, ...tidbits.flatMap(keysOf)])
+  return withTidbits($, async (tidbits, known) => {
+    const taken = new Set([...known, ...tidbits.flatMap(keysOf)])
     const added = found.filter(t => {
       const keys = keysOf(t)
-      if (keys.some(k => known.has(k))) return false
-      keys.forEach(k => known.add(k))
+      if (keys.some(k => taken.has(k))) return false
+      keys.forEach(k => taken.add(k))
       return true
     })
-    return [[...added, ...tidbits], [...seen, ...added.flatMap(keysOf)], added]
+    return [[...added, ...tidbits], [...known, ...added.flatMap(keysOf)], added]
   })
 }
 
@@ -174,12 +176,12 @@ export async function nextTidbit($: EngineInterface): Promise<Tidbit | undefined
     const age = (now - Date.parse(t.publishedAt ?? '')) / DAY
     return weightOf(prefs, t.topic) / (1 + (Number.isFinite(age) ? Math.max(0, age) : 30) / 14)
   }
-  const shown = await withTidbits($, async (all, seen) => {
+  const shown = await withTidbits($, async (all, known) => {
     const tidbits = all.filter(t => !isExpired(t, now))
     const best = tidbits.reduce<Tidbit | undefined>((b, t) => (!b || score(t) > score(b) ? t : b), undefined)
-    if (best) return [tidbits.filter(t => t !== best), seen, best]
-    const seed = SEED_TIDBITS.find(t => !seen.includes(t.id))
-    return [tidbits, seed ? [...seen, seed.id] : seen, seed]
+    if (best) return [tidbits.filter(t => t !== best), known, best]
+    const seed = SEED_TIDBITS.find(t => !known.includes(t.id))
+    return [tidbits, seed ? [...known, seed.id] : known, seed]
   })
   if (shown) await withHistory($, history => [{ ...shown, shownAt: new Date(now).toISOString() }, ...history])
   return shown
