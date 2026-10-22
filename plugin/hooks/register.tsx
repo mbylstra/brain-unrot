@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ConceptTopic, Issue, Message, Question, QuizPrefs, Reaction, Round, Skill, Tidbit } from '../types'
+import type { Category, CategoryWeights, ConceptTopic, Issue, Message, Question, QuizPrefs, Reaction, Round, Skill, Tidbit } from '../types'
 import { askClaude, debug, random } from './claude'
 import { SEEDS } from './seeds'
-import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
+import { askAboutTidbit, installedVersion, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
 
 const PANE = 'brain-unrot'
 const MODEL = 'haiku'
@@ -20,11 +20,10 @@ const CHAT_TICK_MS = 1000
 const ISSUES_DIR = 'docs/issues/todo'
 const RETRY_MS = 60_000
 // Concept questions are about programming in general, so they're worth a stronger model.
-// Below this many ready at your difficulty, generate some; about this share of questions shown are concepts
+// Below this many ready at your difficulty, generate some
 const CONCEPT_MODEL = 'sonnet'
 const CONCEPT_BUDGET_USD = 1
 const CONCEPTS_LOW = 2
-const CONCEPT_SHARE = 0.3
 // Questions read the code and its git history: Bash is limited to reading git history
 const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
 // Concept questions only glance at the project's manifests to see what it's built with
@@ -41,6 +40,14 @@ const STREAK_UP = 3
 // Saying yes generates more when fewer than this many are ready at your difficulty
 const OFFER_CHANCE = 0.5
 const MORE_ABOUT_FILE_LOW = 2
+// How often moving on asks which kind of round you'd like more of
+const PREFERENCE_CHANCE = 0.1
+
+const CATEGORIES: [Category, string][] = [
+  ['codebase', 'Questions about files in this project'],
+  ['concept', 'General programming questions'],
+  ['tidbit', '"Did you know" tidbits'],
+]
 
 const DIFFICULTIES: Record<number, string> = {
   1: 'extremely easy: answerable from names alone, e.g. which folder holds the tests, what a file is for',
@@ -80,6 +87,8 @@ const tips = atom({ plugin: 'brain-unrot', key: 'tips' } as const, 0)
 const skill = atom({ plugin: 'brain-unrot', key: 'skill' } as const, { difficulty: DIFFICULTY_MIN, streak: 0 } as Skill)
 // A line in the footer about the last issue filed, e.g. where it was written
 const notice = atom({ plugin: 'brain-unrot', key: 'notice' } as const, null as string | null)
+// Set while the pane asks which kind of round you'd like more of; the round waits underneath
+const isAskingPreference = atom({ plugin: 'brain-unrot', key: 'isAskingPreference' } as const, false)
 
 // Models (and the seeds) put the right answer first far too often
 function shuffle(q: Question): Question {
@@ -155,7 +164,35 @@ const quizPrefsKey = 'quiz:prefs'
 
 async function loadQuizPrefs($: EngineInterface): Promise<QuizPrefs> {
   const stored = (await $.store.get(quizPrefsKey)) as Partial<QuizPrefs> | undefined
-  return { offerChance: stored?.offerChance ?? OFFER_CHANCE }
+  return { offerChance: stored?.offerChance ?? OFFER_CHANCE, preferenceChance: stored?.preferenceChance ?? PREFERENCE_CHANCE }
+}
+
+// How often each kind of round comes up, kept across projects. All start at 1
+const weightsKey = 'quiz:weights'
+
+async function loadWeights($: EngineInterface): Promise<CategoryWeights> {
+  const stored = (await $.store.get(weightsKey)) as Partial<CategoryWeights> | undefined
+  return { codebase: 1, concept: 1, tidbit: 1, ...stored }
+}
+
+async function prefer($: EngineInterface, category: Category) {
+  const weights = await loadWeights($)
+  const next = { ...weights, [category]: weights[category] + 1 }
+  await $.store.set(weightsKey, next)
+  debug($, `prefer ${category}: ${CATEGORIES.map(([c]) => next[c]).join(':')}`)
+}
+
+// The categories in a random order, each picked in turn by weight from those left.
+// A category weighted 0 is left out
+function weightedOrder(weights: CategoryWeights): Category[] {
+  const left = CATEGORIES.map(([c]) => c).filter(c => weights[c] > 0)
+  const order: Category[] = []
+  while (left.length > 0) {
+    let r = random(left.reduce((sum, c) => sum + weights[c], 0))
+    const i = left.findIndex(c => (r -= weights[c]) < 0)
+    order.push(...left.splice(i < 0 ? left.length - 1 : i, 1))
+  }
+  return order
 }
 
 // The same file, whether it's the absolute path the Read hook saw or a question's relative sourceFile
@@ -229,25 +266,33 @@ async function record($: EngineInterface, outcome: Outcome) {
   debug($, `skill: ${outcome} -> difficulty ${next.difficulty}, streak ${next.streak}`)
 }
 
+// Seed questions not yet answered right, other than `last`
+async function seedsLeft($: EngineInterface, last?: string): Promise<Question[]> {
+  const known = new Set((await loadAnswered($)).map(said))
+  return SEEDS.filter(q => !known.has(said(q.prompt)) && q.id !== last)
+}
+
+async function nextSeed($: EngineInterface, last?: string): Promise<Question | undefined> {
+  const seeds = await seedsLeft($, last)
+  const seed = seeds[random(seeds.length)]
+  return seed && shuffle(seed)
+}
+
+// The newest generated question of the category at or below your difficulty; questions above it wait,
+// and questions already answered right are dropped. A file you asked for more about comes first.
 // `last` is the question just shown: it isn't asked again straight away while a seed question is left
-async function nextQuestion($: EngineInterface, last?: string): Promise<Question | undefined> {
+async function nextQuestion($: EngineInterface, category: Exclude<Category, 'tidbit'>, last?: string): Promise<Question | undefined> {
   const s = await loadSkill($)
   const known = new Set((await loadAnswered($)).map(said))
-  const seeds = SEEDS.filter(q => !known.has(said(q.prompt)) && q.id !== last)
-  // The newest question at or below your difficulty; questions above it wait,
-  // and questions already answered right are dropped. A file you asked for more about comes
-  // first; otherwise, now and then it's a concept question
-  const wantsConcept = random(1000) < CONCEPT_SHARE * 1000
+  const isSeedLeft = (await seedsLeft($, last)).length > 0
   const taken = await withQueue($, async all => {
     const queue = all.filter(q => !known.has(said(q.prompt)))
-    const canTake = (q: Question) => fits(q, s) && (q.id !== last || seeds.length === 0)
+    const canTake = (q: Question) => fits(q, s) && isConcept(q) === (category === 'concept') && (q.id !== last || !isSeedLeft)
     const aboutFile = moreAboutFile === undefined ? -1 : queue.findIndex(q => canTake(q) && q.id !== last && q.sourceFile === moreAboutFile)
-    const preferred = aboutFile >= 0 ? aboutFile : queue.findIndex(q => canTake(q) && isConcept(q) === wantsConcept)
-    const i = preferred >= 0 ? preferred : queue.findIndex(canTake)
+    const i = aboutFile >= 0 ? aboutFile : queue.findIndex(canTake)
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
-  const question = taken ?? seeds[random(seeds.length)]
-  return question && shuffle(question)
+  return taken && shuffle(taken)
 }
 
 // What the round is about, whichever kind it is
@@ -272,31 +317,50 @@ async function hasMoreAboutFileReady($: EngineInterface): Promise<boolean> {
   return isReady
 }
 
-// About one round in three is a tidbit, when one is ready; with no question left,
-// a tidbit is better than nothing. Not while a file you asked for more about has questions ready
+// The categories are tried in an order picked by weight (see weightedOrder), until one has something
+// ready; codebase questions fall back to a seed question, as does having nothing ready in any.
+// While a file you asked for more about has questions ready, they come first.
+// Nothing changes while the pane asks which kind you'd like more of, so no round is taken unseen
 const newRound = async ($: EngineInterface) => {
+  if (await read($, isAskingPreference)) return
   const last = await read($, round)
-  const { share } = await loadPrefs($)
-  const isMoreAboutFileReady = await hasMoreAboutFileReady($)
-  const tidbit = share > 0 && !isMoreAboutFileReady && random(1000) < share * 1000 ? await nextTidbit($) : undefined
-  const question = tidbit ? undefined : await nextQuestion($, last && last.kind !== 'tidbit' ? last.question.id : undefined)
-  const shown = tidbit ?? (question || share === 0 ? undefined : await nextTidbit($))
-  if (shown) {
-    debug($, `round: tidbit ${shown.id}`)
-    await update($, round, (): Round => ({ kind: 'tidbit', tidbit: shown, reaction: null }))
-    await countTips($)
+  const lastQuestion = last && last.kind !== 'tidbit' ? last.question.id : undefined
+  const order = weightedOrder(await loadWeights($))
+  const tried: Category[] = (await hasMoreAboutFileReady($)) ? ['codebase', ...order.filter(c => c !== 'codebase')] : order
+  debug($, `round: trying ${tried.join(', ')}`)
+  for (const category of tried) {
+    if (category === 'tidbit') {
+      const tidbit = await nextTidbit($)
+      if (!tidbit) continue
+      debug($, `round: tidbit ${tidbit.id}`)
+      await update($, round, (): Round => ({ kind: 'tidbit', tidbit, reaction: null }))
+      await countTips($)
+      return
+    }
+    const question = (await nextQuestion($, category, lastQuestion)) ?? (category === 'codebase' ? await nextSeed($, lastQuestion) : undefined)
+    if (!question) continue
+    debug($, `round: ${question.id} ${question.sourceFile ?? '(seed)'}`)
+    await update($, round, (): Round => ({ kind: 'question', question, guess: null }))
     return
   }
-  debug($, `round: ${question ? `${question.id} ${question.sourceFile ?? '(seed)'}` : '(none left)'}`)
-  await update($, round, (): Round | null => (question ? { kind: 'question', question, guess: null } : null))
+  const seed = await nextSeed($, lastQuestion)
+  debug($, `round: ${seed ? `${seed.id} (seed)` : '(none left)'}`)
+  await update($, round, (): Round | null => (seed ? { kind: 'question', question: seed, guess: null } : null))
 }
 
-// Moving on from a question about a file sometimes asks whether you'd like more about it first
-const moveOn = async ($: EngineInterface, question: Question) => {
-  const { offerChance } = await loadQuizPrefs($)
-  if (question.sourceFile && random(1000) < offerChance * 1000) {
+// Moving on sometimes asks something first: whether you'd like more questions about the file
+// the question was about, or else which kind of round you'd like more of.
+// `question` is absent when moving on from a tidbit
+const moveOn = async ($: EngineInterface, question?: Question) => {
+  const { offerChance, preferenceChance } = await loadQuizPrefs($)
+  if (question?.sourceFile && random(1000) < offerChance * 1000) {
     debug($, `offer: more about ${question.sourceFile}`)
     await update($, round, r => (r?.kind === 'question' ? { ...r, isOffering: true, chat: undefined, draft: undefined } : r))
+    return
+  }
+  if (random(1000) < preferenceChance * 1000) {
+    debug($, 'asking which kind of round you would like more of')
+    await update($, isAskingPreference, () => true)
     return
   }
   await newRound($)
@@ -758,6 +822,27 @@ export const register: Register = on => {
       </Box>
     )
 
+    if (await read($, isAskingPreference)) {
+      const weights = await loadWeights($)
+      const answer = (category?: Category) => async () => {
+        if (category) await prefer($, category)
+        await update($, isAskingPreference, () => false)
+        await newRound($)
+      }
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          <Text bold>Which would you like more of?</Text>
+          <Box flexDirection="column">
+            {CATEGORIES.map(([category, label], i) => (
+              <Button key={`prefer-${category}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${label}`} onPress={answer(category)} />
+            ))}
+            <Button key="prefer-none" plain hotkey="s" label="No preference" onPress={answer()} />
+          </Box>
+          <Text dimColor>Each kind comes up in proportion to its weight, now {CATEGORIES.map(([c]) => weights[c]).join(' : ')}. Your pick adds 1.</Text>
+        </Box>
+      )
+    }
+
     if (current === null) {
       // Generation doesn't start a round, so Next checks again
       return frame(
@@ -906,7 +991,7 @@ export const register: Register = on => {
           )}
           {chatBox('Ask about this tidbit…') ??
             (Input ? <Button key="ask" plain hotkey="6" label="6. Ask about this" onPress={ask} /> : null)}
-          <Button key="next" hotkey="n" label="Next" autoFocus={reaction !== null || undefined} onPress={() => newRound($)} />
+          <Button key="next" hotkey="n" label="Next" autoFocus={reaction !== null || undefined} onPress={() => moveOn($)} />
           {reportButton}
         </Box>
       )

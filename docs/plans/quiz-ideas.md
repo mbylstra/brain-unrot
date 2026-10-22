@@ -49,6 +49,19 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   concept questions and tidbits. No moves them to the back, where the
   queue is trimmed when full. Seed and concept questions have no file, so
   they never ask. The chance is `offerChance` in `quiz:prefs` in the store.
+- **"Which would you like more of?"** Each round is one of three kinds:
+  questions about files in the project, general programming questions, or
+  "did you know" tidbits. Each kind has a weight, starting at 1 : 1 : 1 and
+  kept in `quiz:weights` across projects. Every round, the kinds are put in
+  an order by picking each in turn, weighted, from those left, and the first
+  one with something ready is shown. Questions about files fall back to a
+  seed question when none are ready, as does having nothing ready at all.
+  While the question below is showing, a chat prompt doesn't start a round.
+  About one time in ten (when the file offer above doesn't come up), moving
+  on asks which kind you'd like more of, with `1`–`3` for the kinds and `s`
+  for no preference. Your pick adds 1 to its weight, so choosing general
+  programming questions once makes it 1 : 2 : 1. The chance is
+  `preferenceChance` in `quiz:prefs`.
 - **Press 7 to suggest an improvement or file a bug**, before or after
   answering (questions often expose a confusing name or a bug). You
   describe it in a text box; a 1-second timer asks the `claude` CLI to

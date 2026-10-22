@@ -58,10 +58,14 @@ const FULL_QUEUE = [
 const CODEBASE_QUEUE = FULL_QUEUE.filter(q => !('category' in q))
 
 // Tidbits stay out of the way: none are shown, and both lanes ran just now
-const NO_TIDBITS = { 'tidbits:prefs': { share: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
-// Moving on never asks whether you'd like more questions about the file, unless a test says so
-const NO_OFFERS = { 'quiz:prefs': { offerChance: 0 } }
-const ALWAYS_OFFER = { 'quiz:prefs': { offerChance: 1 } }
+const NO_TIDBITS = { 'quiz:weights': { codebase: 1, concept: 1, tidbit: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
+// Every round is a tidbit, when one is ready
+const ONLY_TIDBITS = { codebase: 0, concept: 0, tidbit: 1 }
+// Moving on never asks whether you'd like more questions about the file, or which kind of round
+// you'd like more of, unless a test says so
+const NO_OFFERS = { 'quiz:prefs': { offerChance: 0, preferenceChance: 0 } }
+const ALWAYS_OFFER = { 'quiz:prefs': { offerChance: 1, preferenceChance: 0 } }
+const ALWAYS_ASK_PREFERENCE = { 'quiz:prefs': { offerChance: 0, preferenceChance: 1 } }
 
 type Page = { status: number; text: string; headers?: Record<string, string> }
 
@@ -494,7 +498,7 @@ test('saying yes to more questions about a file puts its questions first, and wr
   expect(await ui.find({ type: 'Text', text: /Would you like more questions about src\/config\.ts\?/ })).toBeTruthy()
 
   // The file's questions come before tidbits, however often those are shown
-  store['tidbits:prefs'] = { share: 1 }
+  store['quiz:weights'] = ONLY_TIDBITS
   await ui.press({ key: 'more-yes' })
   expect(await ui.find({ type: 'Text', text: /Config\?/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Did you know/ })).toBeFalsy()
@@ -532,6 +536,75 @@ test('skipping can ask about more questions too, and no sends the file\'s questi
   // Concept questions are written, as there are none, but nothing more about the file
   await clock.advance(3000)
   expect(calls.some(c => c.argv[2]!.includes('src/config.ts'))).toBe(false)
+  await ui.unmount()
+})
+
+test('now and then moving on asks which kind of round you would like more of, and your pick adds 1 to its weight', async ($, on) => {
+  const { clock, store } = world(on, {
+    ...ALWAYS_ASK_PREFERENCE,
+    // Concept questions are weighted 0, so the first round isn't left to chance
+    'quiz:weights': { codebase: 1, concept: 0, tidbit: 0 },
+    'queue:/repo': FULL_QUEUE,
+    'answered:/repo': SEEDS.map(q => q.prompt),
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /From x\.ts/ })).toBeTruthy()
+
+  await ui.press({ key: 'skip' })
+  expect(await ui.find({ type: 'Text', text: /Which would you like more of\?/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /now 1 : 0 : 0/ })).toBeTruthy()
+  await ui.press({ key: 'prefer-concept' })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, tidbit: 0 })
+  expect(await ui.find({ type: 'Text', text: /Which would you like more of\?/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /From x\.ts|General concept: security/ })).toBeTruthy()
+
+  // A prompt sent meanwhile leaves the question up, and takes nothing from the queue unseen
+  await ui.press({ key: 'skip' })
+  const queued = (store['queue:/repo'] as unknown[]).length
+  await $.prompt.submit({ text: 'do another thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: /Which would you like more of\?/ })).toBeTruthy()
+  expect((store['queue:/repo'] as unknown[]).length).toBe(queued)
+
+  // No preference leaves the weights as they are
+  await ui.press({ key: 'prefer-none' })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, tidbit: 0 })
+  expect(await ui.find({ type: 'Text', text: /From x\.ts|General concept: security/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the kinds start out weighted 1 : 1 : 1', async ($, on) => {
+  const { clock, store } = world(on, { ...ALWAYS_ASK_PREFERENCE, 'quiz:weights': undefined })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // Whatever the first round is, a tidbit or a question, moving on asks
+  await ui.press({ key: (await ui.find({ type: 'Button', key: 'skip' })) ? 'skip' : 'next' })
+  expect(await ui.find({ type: 'Text', text: /now 1 : 1 : 1/ })).toBeTruthy()
+  await ui.press({ key: 'prefer-concept' })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 2, tidbit: 1 })
+  await ui.unmount()
+})
+
+test('a kind weighted 0 never comes up, and a kind with nothing ready falls back to a warm-up question', async ($, on) => {
+  const { clock } = world(on, {
+    'quiz:weights': ONLY_TIDBITS,
+    'queue:/repo': FULL_QUEUE,
+    'tidbits:known': SEED_TIDBITS.map(t => t.id),
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // No tidbit is ready, and the generated questions are weighted 0
+  expect(await ui.find({ type: 'Text', text: /Warm-up question/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -605,7 +678,7 @@ test('new CHANGELOG releases become tidbits, grounded in the line they quote', a
   }
   const { clock, calls, fetched, store } = world(
     on,
-    { 'tidbits:prefs': { share: 1 }, 'tidbits:cursor': { researchedAt: NOW } },
+    { 'quiz:weights': ONLY_TIDBITS, 'tidbits:cursor': { researchedAt: NOW } },
     {},
     { now: NOW, structured, pages },
   )
@@ -693,7 +766,7 @@ test('research keeps only dated items whose quote is on the page', async ($, on)
   }
   const { clock, calls, fetched } = world(
     on,
-    { 'tidbits:prefs': { share: 1 }, 'tidbits:cursor': { changelogAt: NOW }, tidbits: [TIP] },
+    { 'quiz:weights': ONLY_TIDBITS, 'tidbits:cursor': { changelogAt: NOW }, tidbits: [TIP] },
     {},
     { now: NOW, structured, pages },
   )
@@ -727,7 +800,7 @@ test('reactions tune later tidbits, and expired ones are never shown', async ($,
   const expired = { ...TIP, id: 'research:expired', headline: 'An expired tip.', expiresAt: '2026-10-01T00:00:00.000Z' }
   const { clock, store } = world(
     on,
-    { 'tidbits:prefs': { share: 1 }, 'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW }, tidbits: [expired, TIP] },
+    { 'quiz:weights': ONLY_TIDBITS, 'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW }, tidbits: [expired, TIP] },
     {},
     { now: NOW },
   )
@@ -761,7 +834,7 @@ test('reactions tune later tidbits, and expired ones are never shown', async ($,
 test('tidbits stored under the old seen-set name are still known', async ($, on) => {
   const { clock, store } = world(
     on,
-    { 'tidbits:prefs': { share: 1 }, 'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW }, 'tidbits:seen': [SEED_TIDBITS[0]!.id] },
+    { 'quiz:weights': ONLY_TIDBITS, 'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW }, 'tidbits:seen': [SEED_TIDBITS[0]!.id] },
     {},
     { now: NOW },
   )
@@ -778,7 +851,7 @@ test('you can ask about a tidbit, with the web, and file a bug about it', async 
   const { clock, calls, written, store } = world(
     on,
     {
-      'tidbits:prefs': { share: 1 },
+      'quiz:weights': ONLY_TIDBITS,
       'tidbits:cursor': { changelogAt: NOW, researchedAt: NOW, installed: '2.1.305' },
       tidbits: [TIP],
     },

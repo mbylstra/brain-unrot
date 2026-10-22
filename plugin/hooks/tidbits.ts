@@ -34,8 +34,6 @@ const LEVEL_MIN = 1
 const LEVEL_MAX = 5
 const WEIGHT_MIN = 0.1
 const WEIGHT_MAX = 4
-// The part of rounds that are tidbits
-const SHARE = 1 / 3
 // A page with less text than this was likely drawn by JavaScript: it can't confirm or refute a quote
 const PAGE_MIN = 500
 
@@ -95,7 +93,7 @@ async function saveCursor($: EngineInterface, change: Partial<Cursor>) {
 
 export async function loadPrefs($: EngineInterface): Promise<Prefs> {
   const stored = (await $.store.get(KEY.prefs)) as Partial<Prefs> | undefined
-  return { level: stored?.level ?? 2, weights: stored?.weights ?? {}, share: stored?.share ?? SHARE }
+  return { level: stored?.level ?? 2, weights: stored?.weights ?? {} }
 }
 
 // Hashes of every tidbit ever queued, and the ids of seed tidbits shown, so none comes round twice.

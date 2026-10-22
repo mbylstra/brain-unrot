@@ -9,10 +9,16 @@ export type Question = {
   // The difficulty it was generated at; absent on seed questions (difficulty 1)
   difficulty?: number
   // 'concept' is a general programming question, not about the code; absent means the codebase
-  category?: 'codebase' | 'concept'
+  category?: Exclude<Category, 'tidbit'>
   // What a concept question is about, e.g. "security"
   topic?: ConceptTopic
 }
+
+// The kinds of round: questions about the project's files, general programming questions, and tidbits
+export type Category = 'codebase' | 'concept' | 'tidbit'
+
+// How often each kind of round comes up, relative to the others; picking one in "Which would you like more of?" adds 1
+export type CategoryWeights = Record<Category, number>
 
 export type ConceptTopic =
   | "the project's languages and frameworks"
@@ -83,14 +89,22 @@ export type Issue = { text: string; about: { kind: 'question'; question: Questio
 export type Skill = { difficulty: number; streak: number }
 
 // `level` is how advanced tidbits should be, 1 to 5, tuned by "Knew it" and "New to me".
-// `weights` scale how often each topic comes up. `share` is the part of rounds that are tidbits.
-export type Prefs = { level: number; weights: Partial<Record<Topic, number>>; share: number }
+// `weights` scale how often each topic comes up.
+export type Prefs = { level: number; weights: Partial<Record<Topic, number>> }
 
-// `offerChance` is how often moving on from a question asks whether you'd like more about its file
-export type QuizPrefs = { offerChance: number }
+// `offerChance` is how often moving on from a question asks whether you'd like more about its file,
+// and `preferenceChance` how often it asks which kind of round you'd like more of
+export type QuizPrefs = { offerChance: number; preferenceChance: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'brain-unrot': { round: Round | null; ready: number; tips: number; skill: Skill; notice: string | null }
+    'brain-unrot': {
+      round: Round | null
+      ready: number
+      tips: number
+      skill: Skill
+      notice: string | null
+      isAskingPreference: boolean
+    }
   }
 }
