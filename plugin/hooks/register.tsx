@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ConceptTopic, Issue, Message, Question, Reaction, Round, Skill, Tidbit } from '../types'
+import type { ConceptTopic, Issue, Message, Question, QuizPrefs, Reaction, Round, Skill, Tidbit } from '../types'
 import { askClaude, debug, random } from './claude'
 import { SEEDS } from './seeds'
 import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
@@ -37,6 +37,10 @@ const DIFFICULTY_MIN = 1
 const DIFFICULTY_MAX = 5
 // Right answers in a row that move the difficulty up one
 const STREAK_UP = 3
+// How often moving on from a question about a file asks whether you'd like more about it.
+// Saying yes generates more when fewer than this many are ready at your difficulty
+const OFFER_CHANCE = 0.5
+const MORE_ABOUT_FILE_LOW = 2
 
 const DIFFICULTIES: Record<number, string> = {
   1: 'extremely easy: answerable from names alone, e.g. which folder holds the tests, what a file is for',
@@ -143,6 +147,57 @@ async function requeue($: EngineInterface, q: Question) {
   await withQueue($, async queue => [[...queue.filter(p => p.id !== q.id).slice(0, QUEUE_MAX - 1), q], undefined])
 }
 
+// The file you asked for more questions about: its questions come first, ahead of concept
+// questions and tidbits, until none are left or being written
+let moreAboutFile: string | undefined
+
+const quizPrefsKey = 'quiz:prefs'
+
+async function loadQuizPrefs($: EngineInterface): Promise<QuizPrefs> {
+  const stored = (await $.store.get(quizPrefsKey)) as Partial<QuizPrefs> | undefined
+  return { offerChance: stored?.offerChance ?? OFFER_CHANCE }
+}
+
+// The same file, whether it's the absolute path the Read hook saw or a question's relative sourceFile
+const sameFile = (root: string, a: string, b: string) => {
+  const relative = (path: string) => (path.startsWith(root + '/') ? path.slice(root.length + 1) : path)
+  return relative(a) === relative(b)
+}
+
+// Yes: the file's questions go to the front, and more are written if too few fit your difficulty.
+// The question just shown stays where it is, so it doesn't come straight back
+async function wantMore($: EngineInterface, shown: Question, file: string) {
+  const s = await loadSkill($)
+  const known = new Set((await loadAnswered($)).map(said))
+  const root = await $.session.root()
+  const fitting = await withQueue($, async queue => {
+    const about = queue.filter(q => q.sourceFile === file && q.id !== shown.id)
+    const rest = queue.filter(q => !about.includes(q))
+    return [[...about, ...rest], about.filter(q => fits(q, s) && !known.has(said(q.prompt))).length]
+  })
+  moreAboutFile = file
+  if (fitting < MORE_ABOUT_FILE_LOW) {
+    const waiting = pending.findIndex(p => sameFile(root, p, file))
+    if (waiting >= 0) pending.splice(waiting, 1)
+    pending.unshift(file)
+  }
+  debug($, `more about ${file}: yes, ${fitting} ready${fitting < MORE_ABOUT_FILE_LOW ? ', writing more' : ''}`)
+}
+
+// No: the file's questions go to the back, and none are written for it now. The back is also
+// where the queue is trimmed when it's full, so they're the first to go
+async function wantNoMore($: EngineInterface, file: string) {
+  if (moreAboutFile === file) moreAboutFile = undefined
+  const root = await $.session.root()
+  const waiting = pending.findIndex(p => sameFile(root, p, file))
+  if (waiting >= 0) pending.splice(waiting, 1)
+  await withQueue($, async queue => {
+    const about = queue.filter(q => q.sourceFile === file)
+    return [[...queue.filter(q => !about.includes(q)), ...about], undefined]
+  })
+  debug($, `more about ${file}: no`)
+}
+
 // Skill: a 3-up staircase per project; a wrong answer or "no idea" steps down
 const skillKey = async ($: EngineInterface) => `skill:${await $.session.root()}`
 
@@ -180,12 +235,14 @@ async function nextQuestion($: EngineInterface, last?: string): Promise<Question
   const known = new Set((await loadAnswered($)).map(said))
   const seeds = SEEDS.filter(q => !known.has(said(q.prompt)) && q.id !== last)
   // The newest question at or below your difficulty; questions above it wait,
-  // and questions already answered right are dropped. Now and then it's a concept question
+  // and questions already answered right are dropped. A file you asked for more about comes
+  // first; otherwise, now and then it's a concept question
   const wantsConcept = random(1000) < CONCEPT_SHARE * 1000
   const taken = await withQueue($, async all => {
     const queue = all.filter(q => !known.has(said(q.prompt)))
     const canTake = (q: Question) => fits(q, s) && (q.id !== last || seeds.length === 0)
-    const preferred = queue.findIndex(q => canTake(q) && isConcept(q) === wantsConcept)
+    const aboutFile = moreAboutFile === undefined ? -1 : queue.findIndex(q => canTake(q) && q.id !== last && q.sourceFile === moreAboutFile)
+    const preferred = aboutFile >= 0 ? aboutFile : queue.findIndex(q => canTake(q) && isConcept(q) === wantsConcept)
     const i = preferred >= 0 ? preferred : queue.findIndex(canTake)
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
@@ -201,12 +258,27 @@ const countTips = async ($: EngineInterface) => {
   await update($, tips, () => count)
 }
 
+// Whether the file you asked for more about has questions ready; once it has none ready or
+// on the way, it's forgotten
+async function hasMoreAboutFileReady($: EngineInterface): Promise<boolean> {
+  const file = moreAboutFile
+  if (file === undefined) return false
+  const root = await $.session.root()
+  const s = await loadSkill($)
+  const known = new Set((await loadAnswered($)).map(said))
+  const isReady = (await loadQueue($)).some(q => q.sourceFile === file && fits(q, s) && !known.has(said(q.prompt)))
+  const isComing = [...pending, ...(generatingFile ? [generatingFile] : [])].some(p => sameFile(root, p, file))
+  if (!isReady && !isComing) moreAboutFile = undefined
+  return isReady
+}
+
 // About one round in three is a tidbit, when one is ready; with no question left,
-// a tidbit is better than nothing
+// a tidbit is better than nothing. Not while a file you asked for more about has questions ready
 const newRound = async ($: EngineInterface) => {
   const last = await read($, round)
   const { share } = await loadPrefs($)
-  const tidbit = share > 0 && random(1000) < share * 1000 ? await nextTidbit($) : undefined
+  const isMoreAboutFileReady = await hasMoreAboutFileReady($)
+  const tidbit = share > 0 && !isMoreAboutFileReady && random(1000) < share * 1000 ? await nextTidbit($) : undefined
   const question = tidbit ? undefined : await nextQuestion($, last && last.kind !== 'tidbit' ? last.question.id : undefined)
   const shown = tidbit ?? (question || share === 0 ? undefined : await nextTidbit($))
   if (shown) {
@@ -219,9 +291,22 @@ const newRound = async ($: EngineInterface) => {
   await update($, round, (): Round | null => (question ? { kind: 'question', question, guess: null } : null))
 }
 
+// Moving on from a question about a file sometimes asks whether you'd like more about it first
+const moveOn = async ($: EngineInterface, question: Question) => {
+  const { offerChance } = await loadQuizPrefs($)
+  if (question.sourceFile && random(1000) < offerChance * 1000) {
+    debug($, `offer: more about ${question.sourceFile}`)
+    await update($, round, r => (r?.kind === 'question' ? { ...r, isOffering: true, chat: undefined, draft: undefined } : r))
+    return
+  }
+  await newRound($)
+}
+
 // Files Claude has read this session, waiting to be turned into questions
 const pending: string[] = []
 let isGenerating = false
+// The file being written about, while it is
+let generatingFile: string | undefined
 // Whether the last top-up was codebase questions, so the two kinds take turns
 let wasRepoLast = false
 let retryAt = 0
@@ -535,6 +620,7 @@ async function generate($: EngineInterface) {
   const difficulty = difficultyOf(s)
 
   isGenerating = true
+  generatingFile = file
   const root = await $.session.root()
   const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
   const [topic, focus] = isConceptTurn ? pickTopic() : []
@@ -568,6 +654,7 @@ async function generate($: EngineInterface) {
     retryAt = Date.now() + RETRY_MS
   } finally {
     isGenerating = false
+    generatingFile = undefined
   }
 }
 
@@ -824,6 +911,24 @@ export const register: Register = on => {
     }
 
     const { question, guess } = current
+
+    if (current.isOffering && question.sourceFile) {
+      const file = question.sourceFile
+      const answer = (isYes: boolean) => async () => {
+        await (isYes ? wantMore($, question, file) : wantNoMore($, file))
+        await newRound($)
+      }
+      return frame(
+        <Box flexDirection="column" gap={1}>
+          <Text bold>Would you like more questions about {file}?</Text>
+          <Box flexDirection="column">
+            <Button key="more-yes" plain hotkey="1" label="1. Yes" onPress={answer(true)} />
+            <Button key="more-no" plain hotkey="2" label="2. No" onPress={answer(false)} />
+          </Box>
+        </Box>
+      )
+    }
+
     const source = (
     <Text dimColor>
       {question.sourceFile ? `From ${question.sourceFile}` : isConcept(question) ? `General concept: ${question.topic}` : 'Warm-up question'}
@@ -832,7 +937,7 @@ export const register: Register = on => {
 
     const choose = (i: number) => async () => {
       debug($, `guess: ${i} (answer ${question.answer})`)
-      await update($, round, r => (r && r.kind !== 'tidbit' ? { ...r, guess: i } : r))
+      await update($, round, r => (r?.kind === 'question' ? { ...r, guess: i } : r))
       const isRight = i === question.answer
       const wasHelped = chat?.some(m => m.from === 'you') ?? false
       await record($, i === NO_IDEA ? 'no-idea' : isRight && wasHelped ? 'helped' : isRight ? 'right' : 'wrong')
@@ -845,7 +950,7 @@ export const register: Register = on => {
     const skip = async () => {
       debug($, `skip: ${question.id}`)
       await remember($, question)
-      await newRound($)
+      await moveOn($, question)
     }
 
     const choices = (
@@ -907,7 +1012,7 @@ export const register: Register = on => {
         {verdict}
         {question.explanation ? <Text>{question.explanation}</Text> : null}
         {discussion}
-        <Button key="next" hotkey="n" label="Next question" autoFocus onPress={() => newRound($)} />
+        <Button key="next" hotkey="n" label="Next question" autoFocus onPress={() => moveOn($, question)} />
         {reportButton}
       </Box>
     )

@@ -71,9 +71,10 @@ export type Shared = {
 }
 
 // `guess` is a choice index, -1 for "Absolutely no idea", null before answering.
+// `isOffering` is set once you've moved on from the question, while the pane asks whether you'd like more about its file.
 // `reaction` is null until you react to the tidbit.
 export type Round =
-  | (Shared & { kind: 'question'; question: Question; guess: number | null })
+  | (Shared & { kind: 'question'; question: Question; guess: number | null; isOffering?: boolean })
   | (Shared & { kind: 'tidbit'; tidbit: Tidbit; reaction: Reaction | null })
 
 // An issue waiting to be rephrased and written to docs/issues/todo/, with the round it came up on
@@ -84,6 +85,9 @@ export type Skill = { difficulty: number; streak: number }
 // `level` is how advanced tidbits should be, 1 to 5, tuned by "Knew it" and "New to me".
 // `weights` scale how often each topic comes up. `share` is the part of rounds that are tidbits.
 export type Prefs = { level: number; weights: Partial<Record<Topic, number>>; share: number }
+
+// `offerChance` is how often moving on from a question asks whether you'd like more about its file
+export type QuizPrefs = { offerChance: number }
 
 declare module 'claude-code' {
   interface PluginState {

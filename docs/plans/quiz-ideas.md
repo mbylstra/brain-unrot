@@ -40,6 +40,15 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   answer, or "Skip this question" (`s`) to move on without changing your
   difficulty. A right answer after a discussion doesn't move it either;
   a wrong one still steps it down. Hidden on mobile, which has no text box.
+- **"Would you like more questions about this file?"** Half the time,
+  moving on from a question about a file (pressing Next after answering,
+  or skipping) first asks this, with Yes (`1`) and No (`2`). Yes moves the
+  file's other queued questions to the front of the queue, and if fewer
+  than 2 fit your difficulty, puts the file first in line for generation.
+  Until none are left or being written, that file's questions come before
+  concept questions and tidbits. No moves them to the back, where the
+  queue is trimmed when full. Seed and concept questions have no file, so
+  they never ask. The chance is `offerChance` in `quiz:prefs` in the store.
 - **Press 7 to suggest an improvement or file a bug**, before or after
   answering (questions often expose a confusing name or a bug). You
   describe it in a text box; a 1-second timer asks the `claude` CLI to

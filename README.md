@@ -46,6 +46,12 @@ border means the pane is focused.
 After you answer, the pane shows the right answer, a one-line explanation
 and the file the question came from.
 
+**More about a file.** Half the time, moving on from a question about a
+file (Next after answering, or skipping) asks whether you'd like more
+questions about it: 1 for yes, 2 for no. Yes puts that file's questions
+first, and Claude writes more if only a few are ready. No sends its
+questions to the back of the queue.
+
 **Difficulty** goes from 1 to 5 and starts at 1. Three right in a row moves
 it up one; a wrong answer moves it down half a step, and "no idea" moves it
 down one. Questions answered right or skipped aren't asked again. Ones answered wrong

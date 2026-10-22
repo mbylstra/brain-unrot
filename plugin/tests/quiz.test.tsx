@@ -55,8 +55,13 @@ const FULL_QUEUE = [
   ...Array.from({ length: 2 }, (_, i) => ({ ...CONCEPT, id: `concept-${i}`, prompt: `Concept ${i}?` })),
 ]
 
+const CODEBASE_QUEUE = FULL_QUEUE.filter(q => !('category' in q))
+
 // Tidbits stay out of the way: none are shown, and both lanes ran just now
 const NO_TIDBITS = { 'tidbits:prefs': { share: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
+// Moving on never asks whether you'd like more questions about the file, unless a test says so
+const NO_OFFERS = { 'quiz:prefs': { offerChance: 0 } }
+const ALWAYS_OFFER = { 'quiz:prefs': { offerChance: 1 } }
 
 type Page = { status: number; text: string; headers?: Record<string, string> }
 
@@ -71,7 +76,7 @@ function world(
   const opened: string[] = []
   const clock = mock.clock(on, { now })
   // The store, kept here so a test can look at what was saved
-  const saved: Record<string, unknown> = structuredClone({ ...NO_TIDBITS, ...store })
+  const saved: Record<string, unknown> = structuredClone({ ...NO_TIDBITS, ...NO_OFFERS, ...store })
   on('store.get', (_, e) => ({ value: saved[e.key] }))
   on('store.set', (_, e) => {
     saved[e.key] = structuredClone(e.value)
@@ -173,8 +178,7 @@ test('a file Claude reads becomes questions, even with a full queue', async ($, 
 })
 
 test('with few concept questions ready, Sonnet writes some about general programming', async ($, on) => {
-  const queue = FULL_QUEUE.filter(q => !('category' in q))
-  const { clock, calls, store } = world(on, { 'queue:/repo': queue })
+  const { clock, calls, store } = world(on, { 'queue:/repo': CODEBASE_QUEUE })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await clock.advance(3000)
@@ -466,6 +470,68 @@ test('a question answered wrong comes round again', async ($, on) => {
   await ui.press({ key: 'no-idea' })
   await ui.press({ key: 'next' })
   expect(await ui.find({ type: 'Text', text: /Filler\?/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('saying yes to more questions about a file puts its questions first, and writes more when few are left', async ($, on) => {
+  const shown = { ...FILLER, id: 'shown', prompt: 'Shown?', sourceFile: 'src/config.ts', choices: ['right one', 'b', 'c', 'd'] }
+  const other = { ...FILLER, id: 'other', prompt: 'Other?' }
+  const config = { ...FILLER, id: 'config', prompt: 'Config?', sourceFile: 'src/config.ts' }
+  const { clock, calls, store } = world(on, {
+    ...ALWAYS_OFFER,
+    // No concept questions, so the first one shown isn't left to chance
+    'queue:/repo': [shown, other, config, ...CODEBASE_QUEUE],
+    'answered:/repo': SEEDS.map(q => q.prompt),
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Shown\?/ })).toBeTruthy()
+  await ui.press({ key: (await ui.find({ type: 'Button', text: /right one/ }))!.key! })
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /Would you like more questions about src\/config\.ts\?/ })).toBeTruthy()
+
+  // The file's questions come before tidbits, however often those are shown
+  store['tidbits:prefs'] = { share: 1 }
+  await ui.press({ key: 'more-yes' })
+  expect(await ui.find({ type: 'Text', text: /Config\?/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Did you know/ })).toBeFalsy()
+
+  // Only one was ready, so the next tick writes more about the file
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]!.argv[2]).toContain('Read src/config.ts')
+  const [generated] = store['queue:/repo'] as { sourceFile?: string }[]
+  expect(generated!.sourceFile).toBe('src/config.ts')
+  await ui.unmount()
+})
+
+test('skipping can ask about more questions too, and no sends the file\'s questions to the back', async ($, on) => {
+  const shown = { ...FILLER, id: 'shown', prompt: 'Shown?', sourceFile: 'src/config.ts' }
+  const config = { ...FILLER, id: 'config', prompt: 'Config?', sourceFile: 'src/config.ts' }
+  const { clock, calls, store } = world(on, {
+    ...ALWAYS_OFFER,
+    'queue:/repo': [shown, config, ...CODEBASE_QUEUE],
+    'answered:/repo': SEEDS.map(q => q.prompt),
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Shown\?/ })).toBeTruthy()
+  await ui.press({ key: 'skip' })
+  expect(await ui.find({ type: 'Text', text: /Would you like more questions about src\/config\.ts\?/ })).toBeTruthy()
+
+  await ui.press({ key: 'more-no' })
+  expect(await ui.find({ type: 'Text', text: /Config\?/ })).toBeFalsy()
+  expect((store['queue:/repo'] as { id: string }[]).at(-1)!.id).toBe('config')
+
+  // Concept questions are written, as there are none, but nothing more about the file
+  await clock.advance(3000)
+  expect(calls.some(c => c.argv[2]!.includes('src/config.ts'))).toBe(false)
   await ui.unmount()
 })
 
