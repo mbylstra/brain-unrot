@@ -329,13 +329,13 @@ test('a clarifying question opens a discussion, and you can then answer or skip'
   const chat = calls.find(c => c.argv[2]?.includes('clarifying question'))!
   expect(chat.argv[2]).toContain('Never reveal it')
   expect(chat.argv[2]).toContain('Developer: What does "missing" mean here?')
-  // It may edit the issues folder, and no other files
+  // It may edit files in the repo
   expect(chat.argv[chat.argv.indexOf('--tools') + 1]).toBe('Read,Grep,Glob,Bash,Edit,Write')
   expect(chat.argv.slice(chat.argv.indexOf('--allowedTools') + 1, chat.argv.indexOf('--permission-mode'))).toEqual([
     'Bash(git log:*)',
     'Bash(git show:*)',
     'Bash(git blame:*)',
-    'Edit(docs/issues/todo/**)',
+    'Edit(./**)',
   ])
   expect(await ui.find({ type: 'Markdown', text: /no file to read/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Claude is thinking/ })).toBeFalsy()

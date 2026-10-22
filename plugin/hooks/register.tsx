@@ -27,10 +27,10 @@ const CONCEPTS_LOW = 2
 const CONCEPT_SHARE = 0.3
 // Questions read the code and its git history: Bash is limited to reading git history
 const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
-// The quiz chat may also edit the issues folder, e.g. to update or file an issue the developer asks for
 // Concept questions only glance at the project's manifests to see what it's built with
 const CONCEPT = { model: CONCEPT_MODEL, tools: ['Read', 'Grep', 'Glob'], budget: CONCEPT_BUDGET_USD }
-const CHAT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, `Edit(${ISSUES_DIR}/**)`] }
+// The quiz chat and issue filing may also edit files in the repo, e.g. to update a plan the developer asks about
+const EDIT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, 'Edit(./**)'] }
 // The guess recorded for "Absolutely no idea"
 const NO_IDEA = -1
 const DIFFICULTY_MIN = 1
@@ -435,7 +435,7 @@ ${
 The discussion so far:
 ${chat.map(m => `${m.from === 'you' ? 'Developer' : 'You'}: ${m.text}`).join('\n\n')}
 
-If they ask you to file or change an issue, you may edit files in \`${ISSUES_DIR}\` (one markdown file per issue), and nothing else.
+If they ask you to change something, you may edit files in the current directory. Issues go in \`${ISSUES_DIR}\`, one markdown file per issue.
 
 Reply to the developer's last message in a few short sentences of plain text. Put identifiers in backticks.`
 
@@ -474,7 +474,7 @@ async function discuss($: EngineInterface) {
     const text =
       current.kind === 'tidbit'
         ? await askAboutTidbit($, current.tidbit, chat, root)
-        : (await askClaude($, CHAT_PROMPT(current.question, chat, current.guess), { ...CHAT, cwd: root })).text
+        : (await askClaude($, CHAT_PROMPT(current.question, chat, current.guess), { ...EDIT, cwd: root })).text
     await reply(text.trim() || '(no reply)')
   } catch (err) {
     debug($, `chat ${id}: ${String(err)}`)
@@ -509,6 +509,8 @@ Their note:
 ${issue.text}
 
 You may read the code to name the file, function or variable precisely. Rephrase only what they raised: don't add other problems or fixes of your own. If the ${about.kind === 'tidbit' ? 'tip' : 'quiz question'} itself is wrong or misleading, say so.
+
+If their note asks you to change a file in the repo (say, to update a plan), you may edit files in the current directory to make that change; say in the issue what you changed.
 
 Reply with JSON only, no prose and no code fence:
 {"title": "<a short title, under 70 characters>", "body": "<markdown: what the problem is, where it is (file and identifier), and the suggested change if they gave one>"}`
@@ -561,7 +563,7 @@ async function fileIssue($: EngineInterface) {
     let rephrased: { title: string; body: string } | undefined
     try {
       debug($, `issue ${id}: asking claude`)
-      rephrased = parseIssue((await askClaude($, ISSUE_PROMPT(issue), { ...CODE, cwd: root })).text)
+      rephrased = parseIssue((await askClaude($, ISSUE_PROMPT(issue), { ...EDIT, cwd: root })).text)
       if (!rephrased) debug($, `issue ${id}: unparsed reply`)
     } catch (err) {
       debug($, `issue ${id}: ${String(err)}`)
