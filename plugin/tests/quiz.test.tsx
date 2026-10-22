@@ -39,6 +39,22 @@ const ISSUE_REPLY = JSON.stringify({
 
 const FILLER = { prompt: 'Filler?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: '', sourceFile: 'x.ts' }
 
+const CONCEPT = {
+  id: 'concept',
+  prompt: 'Why hash passwords with a slow, salted function?',
+  choices: ['To make brute force costly', 'To save space', 'To speed up logins', 'To allow decryption'],
+  answer: 0,
+  explanation: 'A slow hash makes each guess expensive.',
+  category: 'concept',
+  topic: 'security',
+}
+
+// Enough of both kinds at difficulty 1 that nothing needs generating
+const FULL_QUEUE = [
+  ...Array.from({ length: 5 }, (_, i) => ({ ...FILLER, id: `filler-${i}`, prompt: `Filler ${i}?` })),
+  ...Array.from({ length: 2 }, (_, i) => ({ ...CONCEPT, id: `concept-${i}`, prompt: `Concept ${i}?` })),
+]
+
 // Tidbits stay out of the way: none are shown, and both lanes ran just now
 const NO_TIDBITS = { 'tidbits:prefs': { share: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
 
@@ -144,8 +160,7 @@ test('a warm-up question shows at once, and the queue fills with repo questions'
 })
 
 test('a file Claude reads becomes questions, even with a full queue', async ($, on) => {
-  const queue = Array.from({ length: 5 }, (_, i) => ({ ...FILLER, id: `filler-${i}` }))
-  const { clock, calls } = world(on, { 'queue:/repo': queue })
+  const { clock, calls } = world(on, { 'queue:/repo': FULL_QUEUE })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await clock.advance(3000)
@@ -155,6 +170,58 @@ test('a file Claude reads becomes questions, even with a full queue', async ($, 
   await clock.advance(3000)
   expect(calls).toHaveLength(1)
   expect(calls[0]!.argv[2]).toContain('Read src/config.ts')
+})
+
+test('with few concept questions ready, Sonnet writes some about general programming', async ($, on) => {
+  const queue = FULL_QUEUE.filter(q => !('category' in q))
+  const { clock, calls, store } = world(on, { 'queue:/repo': queue })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+  const argv = calls[0]!.argv
+  expect(argv[2]).toContain("keep a developer's general programming knowledge sharp")
+  expect(argv[2]).toContain('Never ask about syntax')
+  expect(argv[argv.indexOf('--model') + 1]).toBe('sonnet')
+  // It only glances at the project: no Bash
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('Read,Grep,Glob')
+  expect(argv).not.toContain('--allowedTools')
+  expect(argv).toContain('--max-budget-usd')
+
+  const [generated] = store['queue:/repo'] as { category?: string; topic?: string; sourceFile?: string; id: string }[]
+  expect(generated!.category).toBe('concept')
+  expect(generated!.topic).toBeTruthy()
+  expect(generated!.sourceFile).toBeUndefined()
+  expect(generated!.id.startsWith('concept:')).toBe(true)
+})
+
+test('with both kinds low, codebase and concept questions take turns', async ($, on) => {
+  const { clock, calls } = world(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  await clock.advance(3000)
+  expect(calls).toHaveLength(2)
+  expect(calls[0]!.argv[2]).toContain('Look around the repository')
+  expect(calls[1]!.argv[2]).toContain('general programming knowledge')
+})
+
+test('a concept question says what it is about, and the chat knows it is not about the code', async ($, on) => {
+  const { clock, calls } = world(on, { 'queue:/repo': [CONCEPT], 'answered:/repo': SEEDS.map(q => q.prompt) })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /General concept: security/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /slow, salted function/ })).toBeTruthy()
+
+  await ui.press({ key: 'ask' })
+  await ui.input({ key: 'ask', text: 'What is a salt?' })
+  await clock.advance(1000)
+  const chat = calls.find(c => c.argv[2]!.startsWith('You help a developer'))!
+  expect(chat.argv[2]).toContain('about a general programming concept (security)')
+  await ui.unmount()
 })
 
 test('a queue, difficulty and source file stored under the old names still load', async ($, on) => {

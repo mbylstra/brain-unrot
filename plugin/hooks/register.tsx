@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Issue, Message, Question, Reaction, Round, Skill, Tidbit } from '../types'
+import type { ConceptTopic, Issue, Message, Question, Reaction, Round, Skill, Tidbit } from '../types'
 import { askClaude, debug, random } from './claude'
 import { SEEDS } from './seeds'
 import { askAboutTidbit, installedVersion, loadPrefs, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
@@ -19,9 +19,17 @@ const TICK_MS = 3000
 const CHAT_TICK_MS = 1000
 const ISSUES_DIR = 'docs/issues/todo'
 const RETRY_MS = 60_000
+// Concept questions are about programming in general, so they're worth a stronger model.
+// Below this many ready at your difficulty, generate some; about this share of questions shown are concepts
+const CONCEPT_MODEL = 'sonnet'
+const CONCEPT_BUDGET_USD = 1
+const CONCEPTS_LOW = 2
+const CONCEPT_SHARE = 0.3
 // Questions read the code and its git history: Bash is limited to reading git history
 const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
 // The quiz chat may also edit the issues folder, e.g. to update or file an issue the developer asks for
+// Concept questions only glance at the project's manifests to see what it's built with
+const CONCEPT = { model: CONCEPT_MODEL, tools: ['Read', 'Grep', 'Glob'], budget: CONCEPT_BUDGET_USD }
 const CHAT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, `Edit(${ISSUES_DIR}/**)`] }
 // The guess recorded for "Absolutely no idea"
 const NO_IDEA = -1
@@ -37,6 +45,29 @@ const DIFFICULTIES: Record<number, string> = {
   4: 'hard: why the code is written this way, what breaks if something changes',
   5: 'expert: subtle behaviour, edge cases, interactions across several files',
 }
+
+const CONCEPT_DIFFICULTIES: Record<number, string> = {
+  1: 'extremely easy: a well-known term or principle, e.g. what a unit test is for',
+  2: 'easy: when to reach for a common tool or pattern',
+  3: 'medium: the trade-offs between two approaches',
+  4: 'hard: why a practice exists, what goes wrong without it',
+  5: 'expert: subtle failure modes, interactions between systems under load or at scale',
+}
+
+// What each concept topic covers, and how often it comes up: the project's own stack leads
+const CONCEPT_TOPICS: [ConceptTopic, string, number][] = [
+  [
+    "the project's languages and frameworks",
+    'the core concepts of the languages and frameworks the project uses: their execution, concurrency and memory models, type systems, and the idioms and patterns they encourage',
+    3,
+  ],
+  ['frontend', 'frontend: rendering, state management, performance, accessibility', 1],
+  ['backend', 'backend: APIs, data stores, caching, concurrency, error handling', 1],
+  ['security', 'security: authentication, authorization, injection, secrets, the OWASP top 10', 1],
+  ['infrastructure and deployment', 'infrastructure and deployment: CI/CD, containers, observability, scaling, reliability', 1],
+  ['architecture and design', 'architecture and design: modularity, coupling, boundaries, distributed-systems trade-offs', 1],
+  ['general best practices', 'general best practices, independent of language: testing, naming, code review, refactoring, version control', 1],
+]
 
 const round = atom({ plugin: 'brain-unrot', key: 'round' } as const, null as Round | null)
 const ready = atom({ plugin: 'brain-unrot', key: 'ready' } as const, 0)
@@ -117,6 +148,7 @@ const skillKey = async ($: EngineInterface) => `skill:${await $.session.root()}`
 
 const difficultyOf = (s: Skill) => Math.floor(s.difficulty)
 const fits = (q: Question, s: Skill) => (q.difficulty ?? DIFFICULTY_MIN) <= difficultyOf(s)
+const isConcept = (q: Question) => q.category === 'concept'
 
 async function loadSkill($: EngineInterface): Promise<Skill> {
   const stored = (await $.store.get(await skillKey($))) as (Partial<Skill> & Legacy) | undefined
@@ -148,10 +180,13 @@ async function nextQuestion($: EngineInterface, last?: string): Promise<Question
   const known = new Set((await loadAnswered($)).map(said))
   const seeds = SEEDS.filter(q => !known.has(said(q.prompt)) && q.id !== last)
   // The newest question at or below your difficulty; questions above it wait,
-  // and questions already answered right are dropped
+  // and questions already answered right are dropped. Now and then it's a concept question
+  const wantsConcept = random(1000) < CONCEPT_SHARE * 1000
   const taken = await withQueue($, async all => {
     const queue = all.filter(q => !known.has(said(q.prompt)))
-    const i = queue.findIndex(q => fits(q, s) && (q.id !== last || seeds.length === 0))
+    const canTake = (q: Question) => fits(q, s) && (q.id !== last || seeds.length === 0)
+    const preferred = queue.findIndex(q => canTake(q) && isConcept(q) === wantsConcept)
+    const i = preferred >= 0 ? preferred : queue.findIndex(canTake)
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
   })
   const question = taken ?? seeds[random(seeds.length)]
@@ -187,6 +222,8 @@ const newRound = async ($: EngineInterface) => {
 // Files Claude has read this session, waiting to be turned into questions
 const pending: string[] = []
 let isGenerating = false
+// Whether the last top-up was codebase questions, so the two kinds take turns
+let wasRepoLast = false
 let retryAt = 0
 let isChild = false
 
@@ -201,8 +238,8 @@ const avoiding = (queue: Question[], answered: string[]) => {
   return prompts.length === 0 ? '' : `\n\nDon't repeat these questions:\n${prompts.map(p => `- ${p}`).join('\n')}`
 }
 
-const aimAt = (difficulty: number) =>
-  `Difficulty: ${difficulty} of ${DIFFICULTY_MAX}, ${DIFFICULTIES[difficulty]}. Keep every question at this difficulty.`
+const aimAt = (difficulty: number, levels = DIFFICULTIES) =>
+  `Difficulty: ${difficulty} of ${DIFFICULTY_MAX}, ${levels[difficulty]}. Keep every question at this difficulty.`
 
 const HISTORY = 'You may run `git log`, `git show` and `git blame` to see how and why the code got this way.'
 
@@ -221,6 +258,34 @@ Look around the repository (read at most 5 files), then write 4 multiple-choice 
 ${aimAt(difficulty)}
 
 ${FORMAT}${avoid}`
+
+const CONCEPT_PROMPT = (focus: string, difficulty: number, avoid: string) => `You write quiz questions that keep a developer's general programming knowledge sharp. The project they work on is the current directory.
+
+Glance at its manifests and config (e.g. \`package.json\`, \`pyproject.toml\`, \`go.mod\`, \`Cargo.toml\`, \`Dockerfile\`; read at most 3 files) to see which languages, frameworks and infrastructure it uses. Don't quiz them on the project's own code.
+
+Topic: ${focus}.
+
+Write 3 multiple-choice questions on this topic, leaning towards the languages and frameworks the project uses where they fit. Ask about high-level concepts, trade-offs and best practices: why something works the way it does, when to reach for it, what goes wrong without it. Never ask about syntax, API or function names, signatures or flags: those are quick to look up and not worth memorising.
+
+${aimAt(difficulty, CONCEPT_DIFFICULTIES)}
+
+Each question must have exactly 4 plausible choices and exactly one correct answer. Keep questions and choices short; put identifiers in backticks.
+
+Reply with JSON only, no prose and no code fence:
+[{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one or two sentences>"}]${avoid}`
+
+// Weighted, and never the same topic twice in a row
+let lastTopic: ConceptTopic | undefined
+function pickTopic(): [ConceptTopic, string] {
+  const topics = CONCEPT_TOPICS.filter(([t]) => t !== lastTopic)
+  let r = random(topics.reduce((sum, [, , weight]) => sum + weight, 0))
+  for (const [topic, focus, weight] of topics) {
+    r -= weight
+    if (r < 0) return [topic, focus]
+  }
+  const [topic, focus] = topics.at(-1)!
+  return [topic, focus]
+}
 
 function parseQuestions(text: string, difficulty: number, file?: string): Question[] {
   const start = text.indexOf('[')
@@ -260,7 +325,11 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
 }
 
 // Before an answer, claude explains without giving it away; after, it explains the answer
-const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You help a developer with a multiple-choice quiz question about the codebase in the current directory. ${
+const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You help a developer with a multiple-choice quiz question ${
+  isConcept(q)
+    ? `about a general programming concept (${q.topic}). Their project is the current directory: you may relate the concept to it.`
+    : 'about the codebase in the current directory.'
+} ${
   guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
 }
 
@@ -272,7 +341,7 @@ ${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
 ${
   guess === null
-    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses, and the surrounding code, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
+    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses${isConcept(q) ? '' : ', and the surrounding code'}, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
     : `The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''} They chose ${
         guess === NO_IDEA ? '"Absolutely no idea"' : guess + 1
       }. Help them understand why the answer is right and the others are not. You may read the code.`
@@ -340,7 +409,7 @@ The tip:
 ${about.tidbit.headline}
 ${about.tidbit.body}
 Source: ${about.tidbit.url}`
-      : `A developer was answering a multiple-choice quiz question about the codebase in the current directory and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
+      : `A developer was answering a multiple-choice quiz question ${isConcept(about.question) ? `about a general programming concept (${about.question.topic})` : 'about the codebase in the current directory'} and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
 
 The question${about.question.sourceFile ? ` (about ${about.question.sourceFile})` : ''}:
 ${about.question.prompt}
@@ -426,7 +495,9 @@ async function fileIssue($: EngineInterface) {
       ...(about.kind === 'tidbit'
         ? [`Raised on a Brain Unrot "did you know" tip from ${about.tidbit.url}:`, '', `> ${about.tidbit.headline}`]
         : [
-            `Raised while answering a Brain Unrot quiz question${about.question.sourceFile ? ` about \`${about.question.sourceFile}\`` : ''}:`,
+            `Raised while answering a Brain Unrot quiz question${
+              about.question.sourceFile ? ` about \`${about.question.sourceFile}\`` : about.question.topic ? ` about ${about.question.topic}` : ''
+            }:`,
             '',
             `> ${about.question.prompt}`,
           ]),
@@ -453,26 +524,39 @@ async function generate($: EngineInterface) {
   const queue = await loadQueue($)
   const answered = await loadAnswered($)
   const s = await loadSkill($)
-  // A file Claude read comes first; otherwise top up with questions about the repo
-  // whenever too few are at or below your difficulty
+  // A file Claude read comes first; otherwise top up whichever kind has too few
+  // at or below your difficulty, taking turns when both do
   const file = pending.shift()
-  if (file === undefined && queue.filter(q => fits(q, s)).length >= QUEUE_LOW) return
+  const fitting = queue.filter(q => fits(q, s))
+  const isCodebaseLow = fitting.filter(q => !isConcept(q)).length < QUEUE_LOW
+  const isConceptLow = fitting.filter(isConcept).length < CONCEPTS_LOW
+  if (file === undefined && !isCodebaseLow && !isConceptLow) return
+  const isConceptTurn = file === undefined && isConceptLow && (!isCodebaseLow || wasRepoLast)
   const difficulty = difficultyOf(s)
 
   isGenerating = true
   const root = await $.session.root()
   const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
-  const label = shown ?? 'repo'
+  const [topic, focus] = isConceptTurn ? pickTopic() : []
+  const label = topic ? `concept ${topic}` : (shown ?? 'repo')
   try {
     debug($, `generate ${label} at difficulty ${difficulty}: asking claude`)
     const avoid = avoiding(queue, answered)
-    const { text: reply } = await askClaude($, shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid), {
-      ...CODE,
-      cwd: root,
-    })
+    if (file === undefined) wasRepoLast = !isConceptTurn
+    if (topic) lastTopic = topic
+    const { text: reply } = await askClaude(
+      $,
+      focus ? CONCEPT_PROMPT(focus, difficulty, avoid) : shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid),
+      { ...(topic ? CONCEPT : CODE), cwd: root },
+    )
     // The avoid list is only a request, so drop any repeat of a question answered right
     const known = new Set(answered.map(said))
-    const questions = parseQuestions(reply, difficulty, shown).filter(q => !known.has(said(q.prompt)))
+    const parsed = parseQuestions(reply, difficulty, shown)
+    const questions = (
+      topic
+        ? parsed.map((q, i): Question => ({ ...q, id: `concept:${topic}#${Date.now()}-${i}`, sourceFile: undefined, category: 'concept', topic }))
+        : parsed
+    ).filter(q => !known.has(said(q.prompt)))
     debug($, `generate ${label}: ${questions.length} questions`)
     if (questions.length > 0) {
       await withQueue($, async current => [[...questions, ...current], undefined])
@@ -740,7 +824,11 @@ export const register: Register = on => {
     }
 
     const { question, guess } = current
-    const source = <Text dimColor>{question.sourceFile ? `From ${question.sourceFile}` : 'Warm-up question'}</Text>
+    const source = (
+    <Text dimColor>
+      {question.sourceFile ? `From ${question.sourceFile}` : isConcept(question) ? `General concept: ${question.topic}` : 'Warm-up question'}
+    </Text>
+  )
 
     const choose = (i: number) => async () => {
       debug($, `guess: ${i} (answer ${question.answer})`)

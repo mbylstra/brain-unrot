@@ -65,9 +65,16 @@ repo root:
   that file.
 - When fewer than 5 questions are ready at your difficulty, it asks for 4
   about the repo as a whole.
+- When fewer than 2 general programming questions are ready, it asks
+  Sonnet for 3. These are about concepts, trade-offs and best practices
+  (frontend, backend, security, infrastructure, architecture), leaning
+  towards the languages and frameworks your repo uses, never about syntax.
+  Sonnet glances at a few manifests to see what the repo is built with.
+  About 3 in 10 questions shown are these.
 
 The question-writing Claude can only read files (`Read`, `Grep`, `Glob`)
-and run `git log`, `git show` and `git blame`. These calls use your Claude
+and run `git log`, `git show` and `git blame` (general programming
+questions get no `git` either). These calls use your Claude
 account like any other, so they count towards your usage.
 
 Until generated questions are ready, the pane shows a few hand-written

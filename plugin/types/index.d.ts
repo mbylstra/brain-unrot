@@ -8,7 +8,20 @@ export type Question = {
   sourceFile?: string
   // The difficulty it was generated at; absent on seed questions (difficulty 1)
   difficulty?: number
+  // 'concept' is a general programming question, not about the code; absent means the codebase
+  category?: 'codebase' | 'concept'
+  // What a concept question is about, e.g. "security"
+  topic?: ConceptTopic
 }
+
+export type ConceptTopic =
+  | "the project's languages and frameworks"
+  | 'frontend'
+  | 'backend'
+  | 'security'
+  | 'infrastructure and deployment'
+  | 'architecture and design'
+  | 'general best practices'
 
 export type Topic =
   | 'context management'
