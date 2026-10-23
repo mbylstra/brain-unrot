@@ -1,4 +1,4 @@
-// Ported from plugin/hooks/tidbits.ts. Everything here is general, so it's kept in the global store
+// Ported from plugin/hooks/tidbits.ts in the CLI plugin (the `cli-plugin` tag). Everything here is general, so it's kept in the global store
 import type { Host } from '../host'
 
 import type { Message, Prefs, Reaction, ShownTidbit, Tidbit, Topic } from './types'

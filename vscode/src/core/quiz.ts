@@ -1,4 +1,4 @@
-// Ported from plugin/hooks/register.tsx. The atoms become `state`, and the key handlers from
+// Ported from plugin/hooks/register.tsx in the CLI plugin (the `cli-plugin` tag). The atoms become `state`, and the key handlers from
 // the `ui.render` hook become actions the panel sends. One Quiz per workspace folder.
 //
 // Storage differs from the plugin: codebase and instruction questions, and the answered list for

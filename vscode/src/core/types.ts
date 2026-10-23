@@ -1,4 +1,4 @@
-// Copied from plugin/types/index.d.ts. Concept questions also record the project they were written for
+// Copied from plugin/types/index.d.ts in the CLI plugin (the `cli-plugin` tag). Concept questions also record the project they were written for
 
 export type Question = {
   id: string

@@ -1,1 +1,0 @@
-{ "name": "brain-unrot", "version": "0.1.0", "description": "A quiz about your codebase to answer while Claude works", "types": "./types/index.d.ts" }

@@ -1,4 +1,4 @@
-# Brain Unrot for VS Code (experimental)
+# Brain Unrot for VS Code
 
 The Brain Unrot quiz as a VS Code extension. It shows a panel beside the editor whenever you send Claude a prompt. The plan behind it is in [`docs/plans/vscode-panel.md`](../docs/plans/vscode-panel.md).
 
@@ -19,7 +19,7 @@ npm run build && npm run package
 code --install-extension brain-unrot-0.1.0.vsix
 ```
 
-**In a project where you try the panel, disable the CLI plugin** (`/plugin`, then disable `brain-unrot` for that project). The two don't share state, so with both on, every question gets generated twice and you get two quizzes.
+**If you used the old CLI plugin, uninstall it** (`/plugin`). The two don't share state, so with both on, every question gets generated twice and you get two quizzes.
 
 ## How it hears Claude
 
@@ -46,7 +46,7 @@ Logs are in the **Brain Unrot** output channel. The last 200 lines are also writ
 ## Layout
 
 - `src/extension.ts`: activation, one `Quiz` per workspace folder, timers, events
-- `src/core/`: the logic ported from `plugin/hooks` (`quiz.ts` holds what `register.tsx` did)
+- `src/core/`: the quiz logic (`quiz.ts` holds the state, prompts and generation)
 - `src/host.ts`: the `Host` interface the core uses in place of the plugin's `$`. `src/node-host.ts` and `src/store.ts` are its VS Code versions
 - `src/events.ts`: the bridge and transcript watchers
 - `src/panel.ts` and `webview/`: the panel. The webview only draws snapshots and sends actions back

@@ -1,4 +1,4 @@
-// Ported from plugin/hooks/claude.ts
+// Ported from plugin/hooks/claude.ts in the CLI plugin (the `cli-plugin` tag)
 import type { Host } from '../host'
 
 // Name of the environment variable set on the claude process we spawn; when present, the bridge plugin switches itself off there

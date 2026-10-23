@@ -1,6 +1,6 @@
 # Plan: Brain Unrot as a VS Code extension
 
-Status: experimental. Notes come from two claude.ai design chats (Oct 2026), revised 2026-10-23.
+Status: done. Built on 2026-10-23, and the panel won: the CLI pane in `plugin/` was removed the same day and is kept at the `cli-plugin` tag. Notes come from two claude.ai design chats (Oct 2026), revised 2026-10-23.
 
 ## Goal
 

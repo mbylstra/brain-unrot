@@ -1,8 +1,5 @@
 {
   "name": "brain-unrot",
   "owner": { "name": "Michael Bylstra" },
-  "plugins": [
-    { "name": "brain-unrot", "source": "./plugin" },
-    { "name": "brain-unrot-bridge", "source": "./vscode/bridge" }
-  ]
+  "plugins": [{ "name": "brain-unrot-bridge", "source": "./vscode/bridge" }]
 }
