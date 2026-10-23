@@ -37,7 +37,7 @@ The hard constraint is that **the panel must open automatically**. Today the pan
   - `tidbits.ts`
   - `askClaude`
 
-  Pull out a shared core later, if the experiment works out.
+  There's no plan to share code between the two builds. If the panel turns out better (not yet tested), the CLI pane is retired. If it doesn't, the extension is dropped. Either way, only one copy is left.
 - The marketplace may gain a new entry for the bridge (see below). Adding an entry doesn't replace `./plugin`.
 - `claude plugin test plugin` only scans `plugin/`, so the extension's tests don't touch it, and it needs its own test runner.
 - **State isn't shared.** The extension can't read the plugin's `$.store`. If both run in one project, every question gets generated twice and paid for twice, and two quizzes show up. In a project that tries the panel, disable the CLI plugin (`/plugin` → disable `brain-unrot` for that project).
@@ -57,7 +57,7 @@ Claude Code (CLI in the integrated terminal, or Claude's VS Code extension)
        └─ appends one JSON line per event to ~/.brain-unrot/events.jsonl
                                      │ (watched)
 VS Code extension (vscode/)          ▼
-  ├─ events      → start a round, open the panel, queue the read file, "Claude is done"
+  ├─ events      → start a round, open the panel, queue the read file, "Claude is ready"
   ├─ core        → queue, skill, seeds, rounds, prompts, parsers (ported from register.tsx)
   ├─ jobs        → timers for generation, chat, issue filing, tidbit research
   ├─ askClaude   → spawns `claude -p` (same flags and permission sets as today)
@@ -98,7 +98,7 @@ Define a `Host` interface with that shape, so the ported functions change as lit
 
 | `$` today | Extension |
 |---|---|
-| `$.store` | `context.globalState` (global keys `quiz:prefs` and `quiz:weights`). Per-repo keys (`queue:<root>`, `answered:<root>`, `skill:<root>`) use the same key names, also in `globalState`. |
+| `$.store` | JSON files: project data in the project, general data in `~/.brain-unrot/` (see "Storage") |
 | `$.session.root` | The workspace folder that matches the event's `cwd` (or the first folder when there's no event) |
 | `$.process.run` | `child_process.spawn` with a timeout |
 | `$.fs.*` | `vscode.workspace.fs` / `node:fs/promises` |
@@ -107,6 +107,21 @@ Define a `Host` interface with that shape, so the ported functions change as lit
 | `debug()` → `.debug.log` | An output channel ("Brain Unrot") and the same last-200-lines file in `context.logUri`, so Claude can still read it |
 
 The UI parts of `$` (`ui.open`, `ui.focus`, `ui.resolve`, `atom`/`update`) are replaced by the panel. They don't belong in the `Host` interface.
+
+### Storage
+
+Data about a project lives in that project. General data lives on the user's machine. Everything is plain JSON, so the user or Claude can read it, edit it and delete it.
+
+| Where | What |
+|---|---|
+| `<project>/.brain-unrot/` | Codebase and instruction questions (the queue), the `answered` list for them, and skill (difficulty and streak) for this project |
+| `~/.brain-unrot/` | Concept questions, tidbits, and the `answered` list for both; quiz preferences and category weights; `events.jsonl` from the bridge |
+
+- Concept questions are still written with the current project as context, which picks the topics. They're general knowledge, though, so they go in the global store, tagged with the project they came from. Any project can then use them.
+- The extension creates `<project>/.brain-unrot/.gitignore` containing `*`. The folder then stays out of git without touching the project's own `.gitignore`. The questions and progress are personal, so they're never committed.
+- Writes are atomic (write a temp file, then rename it). Each change reads the file fresh first, because several VS Code windows can write to `~/.brain-unrot/` at once.
+- Unlike VS Code's `globalState`, both places are shared by VS Code, Cursor and other forks.
+- The new layout doesn't migrate the plugin's `$.store` data. The extension starts fresh.
 
 ### Background Claude
 
@@ -129,9 +144,11 @@ Using the CLI keeps the user's existing Claude login and billing. Calling the AP
 
 VS Code by itself can't see:
 
-- "the user submitted a prompt" (this opens the panel and starts a round)
+- "the user submitted a prompt" (this opens the panel and starts a round). **This one matters most.** The auto-open depends on it.
 - "Claude read file X" (this queues questions about that file)
-- "Claude finished" (this shows the banner)
+- "Claude finished" (after the current round, this shows "Claude is ready" in place of the next question)
+
+The bridge gets these from Claude Code hooks. Hooks could also go straight into a settings file, but a plugin is the nicer way to give them to users. It's one `/plugin` install, it updates like any plugin, it can be switched on or off per project, and nobody's `settings.json` gets edited.
 
 The bridge is a minimal Claude Code plugin made of plain command hooks:
 
@@ -148,11 +165,14 @@ The extension watches the file and remembers the byte offset it last read up to.
 1. Localhost endpoint (the hook runs `curl`). Use this only if a two-way channel turns out to be needed.
 2. URI handler (`code --open-url`). VS Code may ask the user to confirm the first time, so this is a fallback only.
 
-**Without the bridge** the extension still works, in a reduced form:
+**Without the bridge**, the extension falls back to watching Claude Code's session transcripts. It needs nothing installed apart from the extension.
 
-- The `Brain Unrot: Show Quiz` command and a status bar item open the panel.
-- For the file to ask about, it uses recently edited files (`onDidSaveTextDocument` and a filesystem watcher on the workspace) instead of the files Claude read.
-- There's no auto-open and no "done" banner.
+- Every session writes `~/.claude/projects/<cwd with / replaced by ->/<session-id>.jsonl`. The CLI and Claude's VS Code extension both write it. The three events show up in it as they happen:
+  - a `user` entry with text content means a prompt was submitted
+  - an `assistant` entry with a `tool_use` named `Read` (`input.file_path`) means Claude read a file
+  - a `system` entry with subtype `turn_duration` means Claude finished its turn
+- The format is internal and undocumented, so it could change in any Claude Code release. Parse it defensively, and log when a line doesn't match what's expected. When the bridge is installed, its events win.
+- If neither the bridge nor the transcripts give us anything, the `Brain Unrot: Show Quiz` command and a status bar item open the panel. In that case the file to ask about comes from recently edited files (`onDidSaveTextDocument`).
 
 ### Multiple windows
 
@@ -202,7 +222,7 @@ Constants and prompt text are copied as they are, so the two builds behave the s
 New in the panel:
 
 - **Code rendering:** syntax-highlighted code in questions and explanations.
-- **Done banner:** a "Claude is done" banner from the `Stop` event, with an optional notification. It tells the user to go back to the agent.
+- **"Claude is ready" break:** when the `Stop` event arrives, nothing interrupts the question you're on. When that round ends, the panel shows "Claude is ready" in place of the next question. You either switch back to Claude yourself, or press a key or button to keep going with another question. The next `UserPromptSubmit` clears it. There's no notification, since Claude Code already sends one when its turn finishes. Nice to have: a small banner in the panel while you're still answering.
 
 ## Phases
 
@@ -223,9 +243,14 @@ New in the panel:
 4. **Everything else.**
    - Chat, issue filing, tidbits, preferences and offers, notices.
 5. **Panel-only features.**
-   - "Claude is done" banner, code highlighting, packaging as a `.vsix` (`vsce package`, then `code --install-extension`).
+   - "Claude is ready" break, code highlighting, packaging as a `.vsix` (`vsce package`, then `code --install-extension`).
 
 After phase 3 it's usable day to day. Compare it with the CLI pane before going further.
+
+If the panel wins, retire the CLI pane:
+
+- Remove `plugin/` and its marketplace entry. Keep the bridge plugin.
+- Rewrite CLAUDE.md to describe the extension.
 
 ## Third-party content: iframes vs APIs
 
@@ -254,13 +279,6 @@ Build the quiz UI as one self-contained HTML/JS bundle that talks only through t
 
 ## Costs and trade-offs
 
-- There are two copies of the quiz logic until (and unless) a shared core is pulled out. Fixes made to `plugin/` have to be carried across by hand.
+- Until the experiment is decided, there are two copies of the quiz logic. Fixes made to `plugin/` have to be carried across by hand, so keep the experiment short.
 - It only works in VS Code and its forks. Terminal-only users keep the CLI plugin.
-- Auto-open still depends on Claude Code hooks (the bridge). Without them, the panel is opened by hand.
-
-## Open questions
-
-- Should the bridge live in this marketplace as `brain-unrot-bridge`? Or should the extension offer to write the three hooks into the user's `~/.claude/settings.json`, which avoids a plugin but edits the user's settings?
-- Is `globalState` enough, or should the store be a JSON file so it can be inspected and moved?
-- If the experiment works out: do we pull out a shared core that both builds import, or retire the CLI pane?
-- Does the "Claude is done" banner need a notification too, or is the panel enough?
+- Reliable auto-open depends on the bridge's `UserPromptSubmit` hook. Without the bridge, auto-open relies on the transcript format, which can change without notice.
