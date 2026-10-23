@@ -8,14 +8,16 @@ export type Question = {
   sourceFile?: string
   // The difficulty it was generated at; absent on seed questions (difficulty 1)
   difficulty?: number
-  // 'concept' is a general programming question, not about the code; absent means the codebase
+  // 'concept' is a general programming question, not about the code; 'instructions' is about the
+  // project's instructions for coding agents (CLAUDE.md, AGENTS.md, skills); absent means the codebase
   category?: Exclude<Category, 'tidbit'>
   // What a concept question is about, e.g. "security"
   topic?: ConceptTopic
 }
 
-// The kinds of round: questions about the project's files, general programming questions, and tidbits
-export type Category = 'codebase' | 'concept' | 'tidbit'
+// The kinds of round: questions about the project's files, general programming questions, questions
+// about the project's instructions for coding agents, and tidbits
+export type Category = 'codebase' | 'concept' | 'instructions' | 'tidbit'
 
 // How often each kind of round comes up, relative to the others; picking one in "Which would you like more of?" adds 1
 export type CategoryWeights = Record<Category, number>

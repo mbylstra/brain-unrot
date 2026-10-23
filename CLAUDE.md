@@ -19,9 +19,9 @@ Tests import their kit from `claude-code/testing`. The `claude-code` types under
 - `prompt.submit` starts a new round and opens the pane. It must never hold up the prompt or take the keyboard focus.
 - `ui.render` draws the pane. UI state lives in `atom`s and is changed with `update`.
 
-All model work goes through `askClaude` in `hooks/claude.ts`, which spawns `claude -p` with `--permission-mode dontAsk`, user settings only, hooks disabled and a strict MCP config. The child process would load this plugin too, so `askClaude` sets `BRAIN_UNROT_CHILD` (`DISABLE_PLUGIN_ENV_VAR`), and `register.tsx` goes quiet when it sees it. Each kind of job has its own tool and permission set (`CODE`, `CONCEPT`, `EDIT` in `register.tsx`). Keep these minimal, because they decide what the background Claude can do in the user's repo.
+All model work goes through `askClaude` in `hooks/claude.ts`, which spawns `claude -p` with `--permission-mode dontAsk`, user settings only, hooks disabled and a strict MCP config. The child process would load this plugin too, so `askClaude` sets `BRAIN_UNROT_CHILD` (`DISABLE_PLUGIN_ENV_VAR`), and `register.tsx` goes quiet when it sees it. Each kind of job has its own tool and permission set (`CODE`, `CONCEPT`, `INSTRUCTIONS`, `EDIT` in `register.tsx`). Keep these minimal, because they decide what the background Claude can do in the user's repo.
 
-Models: Haiku writes codebase questions. Sonnet writes general-programming ("concept") questions, and also does all tidbit research (`hooks/tidbits.ts`), because Haiku took the first search result at face value.
+Models: Haiku writes codebase and instruction questions. Sonnet writes general-programming ("concept") questions, and also does all tidbit research (`hooks/tidbits.ts`), because Haiku took the first search result at face value.
 
 Persistence is `$.store`. Per-repo keys are suffixed with the session root (`queue:<root>`, `answered:<root>`, `skill:<root>`), and preferences/weights are global (`quiz:prefs`, `quiz:weights`). When renaming a stored field or key, keep reading the old name: `loadQueue`/`loadSkill` still accept `pantry:`, `level` and `file` from earlier renames.
 
@@ -33,6 +33,7 @@ Debugging: `debug()` writes the last 200 lines to `.debug.log` in `$.plugin.root
 - **queue**: generated questions waiting to be shown (formerly "pantry")
 - **seeds**: hand-written warm-up questions and tidbits in `hooks/seeds.ts`, shown until generated ones are ready
 - **concept question**: a general programming question, not about this repo
+- **instruction question**: a question about what the project tells coding agents, in its instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `SKILL.md` under `.claude/skills` or `.agents/skills`, and `.claude/agents` and `.claude/commands`) and the files they import with `@path`. It's about the instructions as a whole, or about one file (`sourceFile`)
 - **tidbit**: a short "did you know" tip about coding with LLMs (see `docs/plans/did-you-know.md`)
 - **difficulty**: 1–5 (formerly "level"). **skill** is the user's current difficulty plus their streak
 

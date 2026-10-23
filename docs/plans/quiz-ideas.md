@@ -49,18 +49,32 @@ Built on the `quiz-mvp` branch, in `plugin/hooks/register.tsx`:
   concept questions and tidbits. No moves them to the back, where the
   queue is trimmed when full. Seed and concept questions have no file, so
   they never ask. The chance is `offerChance` in `quiz:prefs` in the store.
-- **"Which would you like more of?"** Each round is one of three kinds:
-  questions about files in the project, general programming questions, or
-  "did you know" tidbits. Each kind has a weight, starting at 1 : 1 : 1 and
+- **Questions about the project's instructions for Claude.** When fewer
+  than 2 are ready at your difficulty, and the project has instruction
+  files (`CLAUDE.md`, `CLAUDE.local.md` or `AGENTS.md` at the root, skills
+  under `.claude/skills` or `.agents/skills`, and `.claude/agents` and
+  `.claude/commands`), Haiku is given the list and asked for 3 questions:
+  at least one about the instructions as a whole, the rest about one file.
+  It follows `@path` imports and files the instructions point to, and is
+  told an `@` in a code block isn't an import. A skill linked from
+  `.claude/skills` to `.agents/skills` is listed once. When Claude reads an
+  instruction file, or you ask for more about one, it gets instruction
+  questions rather than code questions. The plugin looks for the files at
+  most once a minute, and without any it never asks.
+- **"Which would you like more of?"** Each round is one of four kinds
+  (three in a project with no instruction files):
+  questions about files in the project, general programming questions,
+  questions about the project's instructions for Claude, or "did you know"
+  tidbits. Each kind has a weight, starting at 1 : 1 : 1 : 1 and
   kept in `quiz:weights` across projects. Every round, the kinds are put in
   an order by picking each in turn, weighted, from those left, and the first
   one with something ready is shown. Questions about files fall back to a
   seed question when none are ready, as does having nothing ready at all.
   While the question below is showing, a chat prompt doesn't start a round.
   About one time in ten (when the file offer above doesn't come up), moving
-  on asks which kind you'd like more of, with `1`–`3` for the kinds and `s`
+  on asks which kind you'd like more of, with `1`–`4` for the kinds and `s`
   for no preference. Your pick adds 1 to its weight, so choosing general
-  programming questions once makes it 1 : 2 : 1. The chance is
+  programming questions once makes it 1 : 2 : 1 : 1. The chance is
   `preferenceChance` in `quiz:prefs`.
 - **Press 7 to suggest an improvement or file a bug**, before or after
   answering (questions often expose a confusing name or a bug). You

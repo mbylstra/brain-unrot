@@ -28,6 +28,15 @@ const CONCEPTS_LOW = 2
 const CODE = { model: MODEL, tools: ['Read', 'Grep', 'Glob', 'Bash'], allowed: ['Bash(git log:*)', 'Bash(git show:*)', 'Bash(git blame:*)'] }
 // Concept questions only glance at the project's manifests to see what it's built with
 const CONCEPT = { model: CONCEPT_MODEL, tools: ['Read', 'Grep', 'Glob'], budget: CONCEPT_BUDGET_USD }
+// Instruction questions are about what the project tells coding agents (CLAUDE.md, AGENTS.md, skills).
+// Below this many ready at your difficulty, generate some, if the project has any instruction files
+const INSTRUCTIONS_LOW = 2
+// How often to look again for instruction files, and how many are sent with each top-up:
+// the root files and a random few of the rest, so the model has reads left to follow imports
+const INSTRUCTIONS_RECHECK_MS = 60_000
+const INSTRUCTIONS_SAMPLE = 5
+// They read the instruction files and the files those import: no Bash
+const INSTRUCTIONS = { model: MODEL, tools: ['Read', 'Grep', 'Glob'] }
 // The quiz chat and issue filing may also edit files in the repo, e.g. to update a plan the developer asks about
 const EDIT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, 'Edit(./**)'] }
 // The guess recorded for "Absolutely no idea"
@@ -46,8 +55,22 @@ const PREFERENCE_CHANCE = 0.1
 const CATEGORIES: [Category, string][] = [
   ['codebase', 'Questions about files in this project'],
   ['concept', 'General programming questions'],
+  ['instructions', "Questions about the project's instructions for Claude (CLAUDE.md, AGENTS.md, skills)"],
   ['tidbit', '"Did you know" tidbits'],
 ]
+
+// The instruction files at the repo root, and where skills, subagents and commands live:
+// each skill is a folder with a SKILL.md, each subagent or command one .md file
+const INSTRUCTION_FILE_NAMES = ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md']
+const SKILL_DIRS = ['.claude/skills', '.agents/skills']
+const AGENT_DIRS = ['.claude/agents', '.claude/commands']
+
+const isInstructionFile = (path: string) => {
+  const name = path.split('/').at(-1)!
+  return (
+    INSTRUCTION_FILE_NAMES.includes(name) || name === 'SKILL.md' || (name.endsWith('.md') && AGENT_DIRS.some(dir => `/${path}`.includes(`/${dir}/`)))
+  )
+}
 
 const DIFFICULTIES: Record<number, string> = {
   1: 'extremely easy: answerable from names alone, e.g. which folder holds the tests, what a file is for',
@@ -63,6 +86,14 @@ const CONCEPT_DIFFICULTIES: Record<number, string> = {
   3: 'medium: the trade-offs between two approaches',
   4: 'hard: why a practice exists, what goes wrong without it',
   5: 'expert: subtle failure modes, interactions between systems under load or at scale',
+}
+
+const INSTRUCTION_DIFFICULTIES: Record<number, string> = {
+  1: 'extremely easy: which file or skill covers what, e.g. which skill is for the frontend',
+  2: 'easy: a rule or command stated plainly, e.g. which command runs the tests',
+  3: 'medium: when a rule, skill or subagent applies, and how the files import or point to each other',
+  4: 'hard: why a rule exists, what goes wrong if the agent ignores it',
+  5: 'expert: which instruction wins when files disagree, cases the instructions leave open',
 }
 
 // What each concept topic covers, and how often it comes up: the project's own stack leads
@@ -159,6 +190,9 @@ async function requeue($: EngineInterface, q: Question) {
 // The file you asked for more questions about: its questions come first, ahead of concept
 // questions and tidbits, until none are left or being written
 let moreAboutFile: string | undefined
+// Files you asked for more about from an instruction question. A file imported by CLAUDE.md
+// (say docs/testing.md) isn't named like an instruction file, so it's known from this
+const instructionSources = new Set<string>()
 
 const quizPrefsKey = 'quiz:prefs'
 
@@ -172,7 +206,7 @@ const weightsKey = 'quiz:weights'
 
 async function loadWeights($: EngineInterface): Promise<CategoryWeights> {
   const stored = (await $.store.get(weightsKey)) as Partial<CategoryWeights> | undefined
-  return { codebase: 1, concept: 1, tidbit: 1, ...stored }
+  return { codebase: 1, concept: 1, instructions: 1, tidbit: 1, ...stored }
 }
 
 async function prefer($: EngineInterface, category: Category) {
@@ -213,6 +247,7 @@ async function wantMore($: EngineInterface, shown: Question, file: string) {
     return [[...about, ...rest], about.filter(q => fits(q, s) && !known.has(said(q.prompt))).length]
   })
   moreAboutFile = file
+  if (categoryOf(shown) === 'instructions') instructionSources.add(file)
   if (fitting < MORE_ABOUT_FILE_LOW) {
     const waiting = pending.findIndex(p => sameFile(root, p, file))
     if (waiting >= 0) pending.splice(waiting, 1)
@@ -241,6 +276,7 @@ const skillKey = async ($: EngineInterface) => `skill:${await $.session.root()}`
 const difficultyOf = (s: Skill) => Math.floor(s.difficulty)
 const fits = (q: Question, s: Skill) => (q.difficulty ?? DIFFICULTY_MIN) <= difficultyOf(s)
 const isConcept = (q: Question) => q.category === 'concept'
+const categoryOf = (q: Question) => q.category ?? 'codebase'
 
 async function loadSkill($: EngineInterface): Promise<Skill> {
   const stored = (await $.store.get(await skillKey($))) as (Partial<Skill> & Legacy) | undefined
@@ -287,7 +323,7 @@ async function nextQuestion($: EngineInterface, category: Exclude<Category, 'tid
   const isSeedLeft = (await seedsLeft($, last)).length > 0
   const taken = await withQueue($, async all => {
     const queue = all.filter(q => !known.has(said(q.prompt)))
-    const canTake = (q: Question) => fits(q, s) && isConcept(q) === (category === 'concept') && (q.id !== last || !isSeedLeft)
+    const canTake = (q: Question) => fits(q, s) && categoryOf(q) === category && (q.id !== last || !isSeedLeft)
     const aboutFile = moreAboutFile === undefined ? -1 : queue.findIndex(q => canTake(q) && q.id !== last && q.sourceFile === moreAboutFile)
     const i = aboutFile >= 0 ? aboutFile : queue.findIndex(canTake)
     return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
@@ -303,18 +339,18 @@ const countTips = async ($: EngineInterface) => {
   await update($, tips, () => count)
 }
 
-// Whether the file you asked for more about has questions ready; once it has none ready or
-// on the way, it's forgotten
-async function hasMoreAboutFileReady($: EngineInterface): Promise<boolean> {
+// The category of a ready question about the file you asked for more about, if it has one
+// (a codebase or an instruction file); once it has none ready or on the way, it's forgotten
+async function moreAboutFileReady($: EngineInterface): Promise<Exclude<Category, 'tidbit'> | undefined> {
   const file = moreAboutFile
-  if (file === undefined) return false
+  if (file === undefined) return undefined
   const root = await $.session.root()
   const s = await loadSkill($)
   const known = new Set((await loadAnswered($)).map(said))
-  const isReady = (await loadQueue($)).some(q => q.sourceFile === file && fits(q, s) && !known.has(said(q.prompt)))
+  const ready = (await loadQueue($)).find(q => q.sourceFile === file && fits(q, s) && !known.has(said(q.prompt)))
   const isComing = [...pending, ...(generatingFile ? [generatingFile] : [])].some(p => sameFile(root, p, file))
-  if (!isReady && !isComing) moreAboutFile = undefined
-  return isReady
+  if (!ready && !isComing) moreAboutFile = undefined
+  return ready && categoryOf(ready)
 }
 
 // The categories are tried in an order picked by weight (see weightedOrder), until one has something
@@ -326,7 +362,8 @@ const newRound = async ($: EngineInterface) => {
   const last = await read($, round)
   const lastQuestion = last && last.kind !== 'tidbit' ? last.question.id : undefined
   const order = weightedOrder(await loadWeights($))
-  const tried: Category[] = (await hasMoreAboutFileReady($)) ? ['codebase', ...order.filter(c => c !== 'codebase')] : order
+  const first = await moreAboutFileReady($)
+  const tried: Category[] = first ? [first, ...order.filter(c => c !== first)] : order
   debug($, `round: trying ${tried.join(', ')}`)
   for (const category of tried) {
     if (category === 'tidbit') {
@@ -371,8 +408,13 @@ const pending: string[] = []
 let isGenerating = false
 // The file being written about, while it is
 let generatingFile: string | undefined
-// Whether the last top-up was codebase questions, so the two kinds take turns
-let wasRepoLast = false
+// The kinds of question topped up when too few are ready, in the order they take turns,
+// and the one topped up last
+const TOP_UPS = ['codebase', 'concept', 'instructions'] as const
+let lastTopUp: (typeof TOP_UPS)[number] = 'instructions'
+// The project's instruction files, relative to the root, and when they were last looked for
+let instructionFiles: string[] = []
+let instructionsCheckedAt = -Infinity
 let retryAt = 0
 let isChild = false
 
@@ -422,6 +464,65 @@ Each question must have exactly 4 plausible choices and exactly one correct answ
 
 Reply with JSON only, no prose and no code fence:
 [{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one or two sentences>"}]${avoid}`
+
+const IMPORTS = `Follow what they point to, staying inside the repository: a line \`@path/to/file\` imports that file into the instructions, with the path relative to the file it's in (skip imports from the home directory, \`@~/...\`). A file the instructions tell the agent to read, and a skill's own reference files, count too. An \`@\` inside a code block, or in front of a package name such as \`@types/node\`, is not an import.`
+
+const INSTRUCTIONS_FORMAT = `Each question must have exactly 4 choices and exactly one correct answer, and be answerable from the instruction files. Keep questions and choices short; put file names, commands and identifiers in backticks.
+
+Reply with JSON only, no prose and no code fence:
+[{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "sourceFile": "<path of the instruction file it is about, relative to the repo root; leave it out for a question about the instructions as a whole>"}]`
+
+const INSTRUCTIONS_INTRO =
+  'You write quiz questions that help a developer know what their project tells coding agents like Claude: the rules the agent must follow, the commands it should run, which skill, subagent or command is for which job, and why.'
+
+const INSTRUCTIONS_PROMPT = (files: string[], difficulty: number, avoid: string) => `${INSTRUCTIONS_INTRO} The project is the current directory.
+
+Its instruction files for coding agents are:
+${files.map(f => `- ${f}`).join('\n')}
+
+There may also be \`CLAUDE.md\` or \`AGENTS.md\` files in subdirectories, which apply when working there. Read the instruction files (at most 8 files in all). ${IMPORTS}
+
+Write 3 multiple-choice questions: at least one about the instructions as a whole, drawing on several files (e.g. which skill covers the frontend, what the agent must do before a database migration), with no \`sourceFile\`, and the rest about one file in particular. Ask what the instructions mean for working in this project, not how a sentence is worded.
+
+${aimAt(difficulty, INSTRUCTION_DIFFICULTIES)}
+
+${INSTRUCTIONS_FORMAT}${avoid}`
+
+const INSTRUCTION_FILE_PROMPT = (file: string, difficulty: number, avoid: string) => `${INSTRUCTIONS_INTRO} The project is the current directory.
+
+Read ${file}, one of its instruction files for coding agents, and write 2 multiple-choice questions about what it tells the agent to do and when it applies. ${IMPORTS}
+
+${aimAt(difficulty, INSTRUCTION_DIFFICULTIES)}
+
+${INSTRUCTIONS_FORMAT}${avoid}`
+
+// The project's instruction files, relative to the root. A skill linked from .claude/skills to
+// .agents/skills is one file, so it's listed once
+async function findInstructionFiles($: EngineInterface, root: string): Promise<string[]> {
+  const exists = (path: string) => $.fs.exists(`${root}/${path}`).catch(() => false)
+  const list = (dir: string) => $.fs.list(`${root}/${dir}`).catch(() => [])
+  const candidates: string[] = [...INSTRUCTION_FILE_NAMES]
+  for (const dir of SKILL_DIRS) candidates.push(...(await list(dir)).filter(e => e.kind !== 'file').map(e => `${dir}/${e.name}/SKILL.md`))
+  for (const dir of AGENT_DIRS) candidates.push(...(await list(dir)).filter(e => e.name.endsWith('.md')).map(e => `${dir}/${e.name}`))
+  const found: string[] = []
+  const seen = new Set<string>()
+  for (const path of candidates) {
+    if (!(await exists(path))) continue
+    const real = (await $.fs.stat(`${root}/${path}`, { resolve: true }).catch(() => undefined))?.realPath ?? path
+    if (seen.has(real)) continue
+    seen.add(real)
+    found.push(path)
+  }
+  return found
+}
+
+// The root files (CLAUDE.md, AGENTS.md), then a random few of the others, in the order found
+function sampleInstructionFiles(files: string[]): string[] {
+  const rest = files.filter(f => !INSTRUCTION_FILE_NAMES.includes(f))
+  const picked = new Set<string>()
+  while (picked.size < Math.min(rest.length, INSTRUCTIONS_SAMPLE - (files.length - rest.length))) picked.add(rest[random(rest.length)]!)
+  return files.filter(f => !rest.includes(f) || picked.has(f))
+}
 
 // Weighted, and never the same topic twice in a row
 let lastTopic: ConceptTopic | undefined
@@ -477,7 +578,9 @@ function parseQuestions(text: string, difficulty: number, file?: string): Questi
 const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You help a developer with a multiple-choice quiz question ${
   isConcept(q)
     ? `about a general programming concept (${q.topic}). Their project is the current directory: you may relate the concept to it.`
-    : 'about the codebase in the current directory.'
+    : categoryOf(q) === 'instructions'
+      ? 'about what the project in the current directory tells coding agents, in its instruction files (`CLAUDE.md`, `AGENTS.md`, skills) and the files they import.'
+      : 'about the codebase in the current directory.'
 } ${
   guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
 }
@@ -490,7 +593,7 @@ ${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
 ${
   guess === null
-    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses${isConcept(q) ? '' : ', and the surrounding code'}, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
+    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses${isConcept(q) ? '' : categoryOf(q) === 'instructions' ? ', and the instructions around it' : ', and the surrounding code'}, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
     : `The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''} They chose ${
         guess === NO_IDEA ? '"Absolutely no idea"' : guess + 1
       }. Help them understand why the answer is right and the others are not. You may read the code.`
@@ -558,7 +661,13 @@ The tip:
 ${about.tidbit.headline}
 ${about.tidbit.body}
 Source: ${about.tidbit.url}`
-      : `A developer was answering a multiple-choice quiz question ${isConcept(about.question) ? `about a general programming concept (${about.question.topic})` : 'about the codebase in the current directory'} and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
+      : `A developer was answering a multiple-choice quiz question ${
+          isConcept(about.question)
+            ? `about a general programming concept (${about.question.topic})`
+            : categoryOf(about.question) === 'instructions'
+              ? "about the project's instructions for coding agents (`CLAUDE.md`, `AGENTS.md`, skills)"
+              : 'about the codebase in the current directory'
+        } and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
 
 The question${about.question.sourceFile ? ` (about ${about.question.sourceFile})` : ''}:
 ${about.question.prompt}
@@ -647,7 +756,13 @@ async function fileIssue($: EngineInterface) {
         ? [`Raised on a Brain Unrot "did you know" tip from ${about.tidbit.url}:`, '', `> ${about.tidbit.headline}`]
         : [
             `Raised while answering a Brain Unrot quiz question${
-              about.question.sourceFile ? ` about \`${about.question.sourceFile}\`` : about.question.topic ? ` about ${about.question.topic}` : ''
+              about.question.sourceFile
+                ? ` about \`${about.question.sourceFile}\``
+                : about.question.topic
+                  ? ` about ${about.question.topic}`
+                  : categoryOf(about.question) === 'instructions'
+                    ? " about the project's instructions for coding agents"
+                    : ''
             }:`,
             '',
             `> ${about.question.prompt}`,
@@ -675,45 +790,69 @@ async function generate($: EngineInterface) {
   const queue = await loadQueue($)
   const answered = await loadAnswered($)
   const s = await loadSkill($)
-  // A file Claude read comes first; otherwise top up whichever kind has too few
-  // at or below your difficulty, taking turns when both do
+  // A file Claude read comes first; otherwise top up whichever kind has too few at or below
+  // your difficulty, taking turns when several do. Instruction questions need instruction files
   const file = pending.shift()
   const fitting = queue.filter(q => fits(q, s))
-  const isCodebaseLow = fitting.filter(q => !isConcept(q)).length < QUEUE_LOW
-  const isConceptLow = fitting.filter(isConcept).length < CONCEPTS_LOW
-  if (file === undefined && !isCodebaseLow && !isConceptLow) return
-  const isConceptTurn = file === undefined && isConceptLow && (!isCodebaseLow || wasRepoLast)
+  const count = (category: Category) => fitting.filter(q => categoryOf(q) === category).length
+  const root = await $.session.root()
+  const now = await $.clock.now()
+  if (file === undefined && count('instructions') < INSTRUCTIONS_LOW && now - instructionsCheckedAt >= INSTRUCTIONS_RECHECK_MS) {
+    instructionsCheckedAt = now
+    instructionFiles = await findInstructionFiles($, root)
+    debug($, `instruction files: ${instructionFiles.join(', ') || '(none)'}`)
+  }
+  const isLow = {
+    codebase: count('codebase') < QUEUE_LOW,
+    concept: count('concept') < CONCEPTS_LOW,
+    instructions: instructionFiles.length > 0 && count('instructions') < INSTRUCTIONS_LOW,
+  }
+  const turn = [...TOP_UPS.slice(TOP_UPS.indexOf(lastTopUp) + 1), ...TOP_UPS].find(c => isLow[c])
+  if (file === undefined && turn === undefined) return
+  const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
+  const kind = shown === undefined ? turn! : isInstructionFile(shown) || instructionSources.has(shown) ? 'instructions' : 'codebase'
   const difficulty = difficultyOf(s)
 
   isGenerating = true
   generatingFile = file
-  const root = await $.session.root()
-  const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
-  const [topic, focus] = isConceptTurn ? pickTopic() : []
-  const label = topic ? `concept ${topic}` : (shown ?? 'repo')
+  const [topic, focus] = kind === 'concept' ? pickTopic() : []
+  const label = topic ? `concept ${topic}` : kind === 'instructions' ? `instructions ${shown ?? '(all)'}` : (shown ?? 'repo')
   try {
     debug($, `generate ${label} at difficulty ${difficulty}: asking claude`)
     const avoid = avoiding(queue, answered)
-    if (file === undefined) wasRepoLast = !isConceptTurn
+    if (file === undefined) lastTopUp = kind
     if (topic) lastTopic = topic
-    const { text: reply } = await askClaude(
-      $,
-      focus ? CONCEPT_PROMPT(focus, difficulty, avoid) : shown ? FILE_PROMPT(shown, difficulty, avoid) : REPO_PROMPT(difficulty, avoid),
-      { ...(topic ? CONCEPT : CODE), cwd: root },
-    )
+    const prompt =
+      focus !== undefined
+        ? CONCEPT_PROMPT(focus, difficulty, avoid)
+        : kind === 'instructions'
+          ? shown
+            ? INSTRUCTION_FILE_PROMPT(shown, difficulty, avoid)
+            : INSTRUCTIONS_PROMPT(sampleInstructionFiles(instructionFiles), difficulty, avoid)
+          : shown
+            ? FILE_PROMPT(shown, difficulty, avoid)
+            : REPO_PROMPT(difficulty, avoid)
+    const { text: reply } = await askClaude($, prompt, { ...(topic ? CONCEPT : kind === 'instructions' ? INSTRUCTIONS : CODE), cwd: root })
     // The avoid list is only a request, so drop any repeat of a question answered right
     const known = new Set(answered.map(said))
     const parsed = parseQuestions(reply, difficulty, shown)
     const questions = (
       topic
         ? parsed.map((q, i): Question => ({ ...q, id: `concept:${topic}#${Date.now()}-${i}`, sourceFile: undefined, category: 'concept', topic }))
-        : parsed
+        : kind === 'instructions'
+          ? parsed.map((q, i): Question => ({ ...q, id: `instructions:${q.sourceFile ?? 'all'}#${Date.now()}-${i}`, category: 'instructions' }))
+          : parsed
     ).filter(q => !known.has(said(q.prompt)))
     debug($, `generate ${label}: ${questions.length} questions`)
     if (questions.length > 0) {
       await withQueue($, async current => [[...questions, ...current], undefined])
     } else {
       debug($, `generate ${label}: unparsed reply ${JSON.stringify(reply.slice(0, 300))}`)
+      // Leave instruction questions be until the files are looked for again, rather than ask every tick
+      if (kind === 'instructions' && !shown) {
+        instructionFiles = []
+        instructionsCheckedAt = await $.clock.now()
+      }
     }
   } catch (err) {
     debug($, `generate ${label}: ${String(err)}`)
@@ -824,6 +963,9 @@ export const register: Register = on => {
 
     if (await read($, isAskingPreference)) {
       const weights = await loadWeights($)
+      // Instruction questions are only offered in a project that has instruction files
+      const hasInstructions = instructionFiles.length > 0 || (await loadQueue($)).some(q => categoryOf(q) === 'instructions')
+      const categories = CATEGORIES.filter(([category]) => category !== 'instructions' || hasInstructions)
       const answer = (category?: Category) => async () => {
         if (category) await prefer($, category)
         await update($, isAskingPreference, () => false)
@@ -833,12 +975,12 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           <Text bold>Which would you like more of?</Text>
           <Box flexDirection="column">
-            {CATEGORIES.map(([category, label], i) => (
+            {categories.map(([category, label], i) => (
               <Button key={`prefer-${category}`} plain hotkey={String(i + 1)} label={`${i + 1}. ${label}`} onPress={answer(category)} />
             ))}
             <Button key="prefer-none" plain hotkey="s" label="No preference" onPress={answer()} />
           </Box>
-          <Text dimColor>Each kind comes up in proportion to its weight, now {CATEGORIES.map(([c]) => weights[c]).join(' : ')}. Your pick adds 1.</Text>
+          <Text dimColor>Each kind comes up in proportion to its weight, now {categories.map(([c]) => weights[c]).join(' : ')}. Your pick adds 1.</Text>
         </Box>
       )
     }
@@ -1018,7 +1160,13 @@ export const register: Register = on => {
 
     const source = (
     <Text dimColor>
-      {question.sourceFile ? `From ${question.sourceFile}` : isConcept(question) ? `General concept: ${question.topic}` : 'Warm-up question'}
+      {question.sourceFile
+        ? `From ${question.sourceFile}`
+        : isConcept(question)
+          ? `General concept: ${question.topic}`
+          : categoryOf(question) === 'instructions'
+            ? "About the project's instructions for Claude"
+            : 'Warm-up question'}
     </Text>
   )
 

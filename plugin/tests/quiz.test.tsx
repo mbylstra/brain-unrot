@@ -30,6 +30,28 @@ const REPLY = JSON.stringify([
   { prompt: 'Broken question', choices: ['only two', 'choices'], answer: 0 },
 ])
 
+const INSTRUCTIONS_REPLY = JSON.stringify([
+  {
+    prompt: 'Which skill should the agent load before writing a migration?',
+    choices: ['`backend`', '`commit`', '`web-frontend-development`', 'None of them'],
+    answer: 0,
+    explanation: 'The backend skill covers migrations.',
+  },
+  {
+    prompt: 'What must the agent do before acting on something broader than was asked?',
+    choices: ['Ask first', 'Run the tests', 'Open a pull request', 'Nothing'],
+    answer: 0,
+    explanation: '`AGENTS.md` says to ask before acting.',
+    sourceFile: 'AGENTS.md',
+  },
+])
+
+// A project with instruction files: .claude/skills/backend links to .agents/skills/backend
+const INSTRUCTION_FILES = {
+  files: ['/repo/AGENTS.md', '/repo/.agents/skills/backend/SKILL.md', '/repo/.claude/skills/backend/SKILL.md', '/repo/.claude/commands/commit.md', '/repo/.claude/commands/notes.txt'],
+  links: { '/repo/.claude/skills/backend/SKILL.md': '/repo/.agents/skills/backend/SKILL.md' },
+}
+
 const CHAT_REPLY = 'It asks what the function hands back when there is no file to read.'
 
 const ISSUE_REPLY = JSON.stringify({
@@ -58,9 +80,9 @@ const FULL_QUEUE = [
 const CODEBASE_QUEUE = FULL_QUEUE.filter(q => !('category' in q))
 
 // Tidbits stay out of the way: none are shown, and both lanes ran just now
-const NO_TIDBITS = { 'quiz:weights': { codebase: 1, concept: 1, tidbit: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
+const NO_TIDBITS = { 'quiz:weights': { codebase: 1, concept: 1, instructions: 1, tidbit: 0 }, 'tidbits:cursor': { changelogAt: 0, researchedAt: 0 } }
 // Every round is a tidbit, when one is ready
-const ONLY_TIDBITS = { codebase: 0, concept: 0, tidbit: 1 }
+const ONLY_TIDBITS = { codebase: 0, concept: 0, instructions: 0, tidbit: 1 }
 // Moving on never asks whether you'd like more questions about the file, or which kind of round
 // you'd like more of, unless a test says so
 const NO_OFFERS = { 'quiz:prefs': { offerChance: 0, preferenceChance: 0 } }
@@ -70,12 +92,27 @@ const ALWAYS_ASK_PREFERENCE = { 'quiz:prefs': { offerChance: 0, preferenceChance
 type Page = { status: number; text: string; headers?: Record<string, string> }
 
 // Stands in for the engine; returns the argv of each claude CLI call.
-// `structured` answers the calls that ask for JSON output, and `pages` the fetches
+// `structured` answers the calls that ask for JSON output, and `pages` the fetches.
+// `files` exist on disk, and `links` lead from one of them to another. `reply`, when it answers, replaces the canned reply
 function world(
   on: On,
   store: Record<string, unknown> = {},
   env: Record<string, string> = {},
-  { now = 0, structured = () => ({}), pages = {} }: { now?: number; structured?: (prompt: string) => unknown; pages?: Record<string, Page> } = {},
+  {
+    now = 0,
+    structured = () => ({}),
+    pages = {},
+    files = [],
+    links = {},
+    reply = () => undefined,
+  }: {
+    now?: number
+    structured?: (prompt: string) => unknown
+    pages?: Record<string, Page>
+    files?: string[]
+    links?: Record<string, string>
+    reply?: (prompt: string) => string | undefined
+  } = {},
 ) {
   const opened: string[] = []
   const clock = mock.clock(on, { now })
@@ -105,7 +142,20 @@ function world(
     if (!e.path.endsWith('.debug.log')) written.push(e)
     return { value: undefined }
   })
-  on('fs.exists', (_, e) => ({ value: written.some(w => w.path === e.path) }))
+  on('fs.exists', (_, e) => ({ value: written.some(w => w.path === e.path) || files.includes(e.path) }))
+  // A directory is anything a file is under; links are listed as links
+  on('fs.list', (_, e) => {
+    const names = new Set(files.filter(f => f.startsWith(e.path + '/')).map(f => f.slice(e.path.length + 1).split('/')[0]!))
+    return {
+      value: [...names].map(name => {
+        const path = `${e.path}/${name}`
+        const isLink = Object.keys(links).some(l => l.startsWith(path + '/'))
+        const kind = isLink ? 'other' : files.includes(path) ? 'file' : 'dir'
+        return { name, kind, size: 0, mtimeMs: 0, isLink } as const
+      }),
+    }
+  })
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: 0, mtimeMs: 0, isLink: e.path in links, realPath: links[e.path] ?? e.path } as const }))
   const fetched: { url: string; headers?: Record<string, string> }[] = []
   on('http.fetch', (_, e) => {
     fetched.push({ url: e.url, headers: e.init?.headers })
@@ -124,11 +174,13 @@ function world(
     if (e.argv.includes('--json-schema')) {
       return out(JSON.stringify({ type: 'result', result: '', structured_output: structured(prompt), total_cost_usd: 0.01 }))
     }
-    const stdout = prompt.startsWith('You help a developer')
+    const stdout = reply(prompt) ?? (prompt.startsWith('You help a developer')
       ? CHAT_REPLY
       : prompt.includes('Rewrite their note')
         ? ISSUE_REPLY
-        : REPLY
+        : prompt.includes('what their project tells coding agents')
+          ? INSTRUCTIONS_REPLY
+          : REPLY)
     return out(stdout)
   })
   return { clock, calls, opened, written, fetched, store: saved }
@@ -229,6 +281,142 @@ test('a concept question says what it is about, and the chat knows it is not abo
   await clock.advance(1000)
   const chat = calls.find(c => c.argv[2]!.startsWith('You help a developer'))!
   expect(chat.argv[2]).toContain('about a general programming concept (security)')
+  await ui.unmount()
+})
+
+test('a project with instruction files gets questions about them, as a whole and file by file', async ($, on) => {
+  const { clock, calls, store } = world(on, { 'queue:/repo': FULL_QUEUE }, {}, INSTRUCTION_FILES)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+  const argv = calls[0]!.argv
+  const prompt = argv[2]!
+  expect(prompt).toContain('- AGENTS.md\n- .claude/skills/backend/SKILL.md\n- .claude/commands/commit.md\n\n')
+  // The linked skill is listed once, and only markdown commands count
+  expect(prompt).not.toContain('.agents/skills/backend/SKILL.md')
+  expect(prompt).not.toContain('notes.txt')
+  // It follows imports, and knows a decorator in a code block isn't one
+  expect(prompt).toContain('`@path/to/file` imports that file')
+  expect(prompt).toContain('An `@` inside a code block')
+  expect(argv[argv.indexOf('--model') + 1]).toBe('haiku')
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('Read,Grep,Glob')
+  expect(argv).not.toContain('--allowedTools')
+
+  const [general, aboutFile] = store['queue:/repo'] as { category?: string; sourceFile?: string; id: string }[]
+  expect(general!.category).toBe('instructions')
+  expect(general!.sourceFile).toBeUndefined()
+  expect(general!.id.startsWith('instructions:all#')).toBe(true)
+  expect(aboutFile!.category).toBe('instructions')
+  expect(aboutFile!.sourceFile).toBe('AGENTS.md')
+
+  // Two are ready, so no more are written
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+})
+
+test('with many instruction files, each top-up sends the root ones and a few others', async ($, on) => {
+  const skills = Array.from({ length: 8 }, (_, i) => `/repo/.agents/skills/skill-${i}/SKILL.md`)
+  const { clock, calls } = world(on, { 'queue:/repo': FULL_QUEUE }, {}, { files: ['/repo/AGENTS.md', ...skills] })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  const listed = calls[0]!.argv[2]!.split('\n').filter(line => /^- .*\.md$/.test(line))
+  expect(listed).toHaveLength(5)
+  expect(listed[0]).toBe('- AGENTS.md')
+})
+
+test('a top-up with no instruction questions in it waits until the files are looked for again', async ($, on) => {
+  const { clock, calls } = world(on, { 'queue:/repo': FULL_QUEUE }, {}, { ...INSTRUCTION_FILES, reply: () => 'Sorry, no questions.' })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+  await clock.advance(30_000)
+  expect(calls).toHaveLength(1)
+  await clock.advance(60_000)
+  expect(calls).toHaveLength(2)
+})
+
+test('without instruction files, no instruction questions are written', async ($, on) => {
+  const { clock, calls } = world(on, { 'queue:/repo': FULL_QUEUE })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await clock.advance(9000)
+  expect(calls).toHaveLength(0)
+})
+
+test('an instruction question says what it is about, and the chat knows it', async ($, on) => {
+  const general = { ...FILLER, id: 'instructions', prompt: 'Which skill covers migrations?', sourceFile: undefined, category: 'instructions' }
+  const { clock, calls } = world(on, { 'queue:/repo': [general], 'answered:/repo': SEEDS.map(q => q.prompt) })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /About the project's instructions for Claude/ })).toBeTruthy()
+
+  await ui.press({ key: 'ask' })
+  await ui.input({ key: 'ask', text: 'What is a skill?' })
+  await clock.advance(1000)
+  const chat = calls.find(c => c.argv[2]!.startsWith('You help a developer'))!
+  expect(chat.argv[2]).toContain('what the project in the current directory tells coding agents')
+  await ui.unmount()
+})
+
+test('an instruction file Claude reads, or you ask for more about, gets instruction questions', async ($, on) => {
+  const shown = { ...FILLER, id: 'shown', prompt: 'Shown?', sourceFile: 'AGENTS.md', category: 'instructions', choices: ['right one', 'b', 'c', 'd'] }
+  const { clock, calls, store } = world(
+    on,
+    { ...ALWAYS_OFFER, 'queue:/repo': [shown, ...FULL_QUEUE], 'answered:/repo': SEEDS.map(q => q.prompt), 'quiz:weights': { ...ONLY_TIDBITS, tidbit: 0, instructions: 1 } },
+    {},
+    INSTRUCTION_FILES,
+  )
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Read', file_path: '/repo/.claude/skills/backend/SKILL.md' })
+  await clock.advance(3000)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]!.argv[2]).toContain('Read .claude/skills/backend/SKILL.md, one of its instruction files')
+  const written = (store['queue:/repo'] as { category?: string; sourceFile?: string }[]).slice(0, 2)
+  expect(written.every(q => q.category === 'instructions' && q.sourceFile === '.claude/skills/backend/SKILL.md')).toBe(true)
+
+  // Saying yes about AGENTS.md puts its questions first, even with only tidbits weighted
+  store['queue:/repo'] = [shown, { ...shown, id: 'more', prompt: 'More about AGENTS.md?' }, ...FULL_QUEUE]
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Shown\?/ })).toBeTruthy()
+  await ui.press({ key: 'skip' })
+  expect(await ui.find({ type: 'Text', text: /Would you like more questions about/ })).toBeTruthy()
+  store['quiz:weights'] = ONLY_TIDBITS
+  await ui.press({ key: 'more-yes' })
+  expect(await ui.find({ type: 'Text', text: /More about AGENTS\.md\?/ })).toBeTruthy()
+
+  // Only that one was ready, so the next tick writes more about AGENTS.md, as instruction questions
+  await clock.advance(3000)
+  expect(calls.at(-1)!.argv[2]).toContain('Read AGENTS.md, one of its instruction files')
+  await ui.unmount()
+})
+
+test('more about a file an instruction imports gets instruction questions, though it is not named like one', async ($, on) => {
+  const shown = { ...FILLER, id: 'shown', prompt: 'Shown?', sourceFile: 'docs/testing.md', category: 'instructions' }
+  const { clock, calls } = world(
+    on,
+    { ...ALWAYS_OFFER, 'queue:/repo': [shown, ...FULL_QUEUE], 'answered:/repo': SEEDS.map(q => q.prompt), 'quiz:weights': { ...ONLY_TIDBITS, tidbit: 0, instructions: 1 } },
+    {},
+    { files: ['/repo/CLAUDE.md', '/repo/docs/testing.md'] },
+  )
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.prompt.submit({ text: 'do a thing', wait: false, origin: { kind: 'composer' } })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'skip' })
+  await ui.press({ key: 'more-yes' })
+  calls.length = 0
+  await clock.advance(3000)
+  expect(calls[0]!.argv[2]).toContain('Read docs/testing.md, one of its instruction files')
   await ui.unmount()
 })
 
@@ -543,7 +731,7 @@ test('now and then moving on asks which kind of round you would like more of, an
   const { clock, store } = world(on, {
     ...ALWAYS_ASK_PREFERENCE,
     // Concept questions are weighted 0, so the first round isn't left to chance
-    'quiz:weights': { codebase: 1, concept: 0, tidbit: 0 },
+    'quiz:weights': { codebase: 1, concept: 0, instructions: 0, tidbit: 0 },
     'queue:/repo': FULL_QUEUE,
     'answered:/repo': SEEDS.map(q => q.prompt),
   })
@@ -558,7 +746,7 @@ test('now and then moving on asks which kind of round you would like more of, an
   expect(await ui.find({ type: 'Text', text: /Which would you like more of\?/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /now 1 : 0 : 0/ })).toBeTruthy()
   await ui.press({ key: 'prefer-concept' })
-  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, tidbit: 0 })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, instructions: 0, tidbit: 0 })
   expect(await ui.find({ type: 'Text', text: /Which would you like more of\?/ })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /From x\.ts|General concept: security/ })).toBeTruthy()
 
@@ -572,12 +760,12 @@ test('now and then moving on asks which kind of round you would like more of, an
 
   // No preference leaves the weights as they are
   await ui.press({ key: 'prefer-none' })
-  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, tidbit: 0 })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 1, instructions: 0, tidbit: 0 })
   expect(await ui.find({ type: 'Text', text: /From x\.ts|General concept: security/ })).toBeTruthy()
   await ui.unmount()
 })
 
-test('the kinds start out weighted 1 : 1 : 1', async ($, on) => {
+test('the kinds start out weighted 1 : 1 : 1, with instruction questions left out of a project that has no instruction files', async ($, on) => {
   const { clock, store } = world(on, { ...ALWAYS_ASK_PREFERENCE, 'quiz:weights': undefined })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
@@ -587,8 +775,9 @@ test('the kinds start out weighted 1 : 1 : 1', async ($, on) => {
   // Whatever the first round is, a tidbit or a question, moving on asks
   await ui.press({ key: (await ui.find({ type: 'Button', key: 'skip' })) ? 'skip' : 'next' })
   expect(await ui.find({ type: 'Text', text: /now 1 : 1 : 1/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'prefer-instructions' })).toBeFalsy()
   await ui.press({ key: 'prefer-concept' })
-  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 2, tidbit: 1 })
+  expect(store['quiz:weights']).toEqual({ codebase: 1, concept: 2, instructions: 1, tidbit: 1 })
   await ui.unmount()
 })
 
