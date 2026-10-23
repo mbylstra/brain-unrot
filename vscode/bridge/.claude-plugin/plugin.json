@@ -1,0 +1,5 @@
+{
+  "name": "brain-unrot-bridge",
+  "version": "0.1.0",
+  "description": "Tells the Brain Unrot VS Code extension when you send Claude a prompt, when Claude reads a file and when it finishes. Holds no quiz logic."
+}

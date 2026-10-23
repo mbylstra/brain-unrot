@@ -1,0 +1,288 @@
+/* VS Code's theme variables, so the panel follows the editor's light, dark or high-contrast theme */
+:root {
+  --gap: 12px;
+  --radius: 6px;
+  --right: var(--vscode-testing-iconPassed, #3fb950);
+  --wrong: var(--vscode-testing-iconFailed, #f85149);
+  --unsure: var(--vscode-editorWarning-foreground, #d29922);
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: var(--vscode-editor-background, Canvas);
+  color: var(--vscode-foreground, CanvasText);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.5;
+}
+
+#app {
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--gap) * 1.5);
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.25em;
+  font-weight: 600;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  align-items: flex-start;
+}
+
+.stack > * {
+  max-width: 100%;
+}
+
+.dim {
+  color: var(--vscode-descriptionForeground, GrayText);
+}
+
+code,
+kbd {
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.95em;
+}
+
+:not(pre) > code {
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+a {
+  color: var(--vscode-textLink-foreground, LinkText);
+  word-break: break-all;
+}
+
+/* Buttons */
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: stretch;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  color: inherit;
+  background: transparent;
+}
+
+.button.plain {
+  color: var(--vscode-textLink-foreground, LinkText);
+  padding: 2px 0;
+}
+
+.button.choice {
+  border-color: var(--vscode-panel-border, rgba(127, 127, 127, 0.35));
+  background: var(--vscode-editorWidget-background, transparent);
+  padding: 8px 12px;
+}
+
+.button.choice:hover,
+.button.choice:focus-visible {
+  border-color: var(--vscode-focusBorder, Highlight);
+}
+
+.button.primary {
+  background: var(--vscode-button-background, ButtonFace);
+  color: var(--vscode-button-foreground, ButtonText);
+  padding: 6px 14px;
+}
+
+.button.primary:hover {
+  background: var(--vscode-button-hoverBackground, ButtonFace);
+}
+
+.button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, Highlight);
+  outline-offset: 2px;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  text-align: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.35));
+  color: var(--vscode-descriptionForeground, GrayText);
+  font-size: 0.85em;
+}
+
+.button.primary kbd {
+  color: inherit;
+  border-color: currentColor;
+  opacity: 0.8;
+}
+
+/* Answers */
+
+.answered {
+  margin: 0;
+  padding-left: 1.5em;
+}
+
+.answered .is-answer {
+  color: var(--right);
+  font-weight: 600;
+}
+
+.answered .is-guess {
+  color: var(--wrong);
+  text-decoration: line-through;
+}
+
+.verdict {
+  font-weight: 600;
+}
+.verdict.right,
+.right {
+  color: var(--right);
+}
+.verdict.wrong {
+  color: var(--wrong);
+}
+.verdict.unsure {
+  color: var(--unsure);
+}
+
+.tidbit-label {
+  font-weight: 600;
+  color: var(--unsure);
+}
+
+/* Chat and issue boxes */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: stretch;
+}
+
+.chat .you {
+  color: var(--vscode-textPreformat-foreground, inherit);
+}
+
+.chat .claude {
+  padding-left: 10px;
+  border-left: 2px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.35));
+}
+
+.box {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+textarea {
+  font: inherit;
+  resize: vertical;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  color: var(--vscode-input-foreground, FieldText);
+  background: var(--vscode-input-background, Field);
+  border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.35));
+}
+
+textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder, Highlight);
+}
+
+.box-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9em;
+}
+
+/* Claude is ready */
+
+.banner {
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--vscode-inputValidation-infoBackground, rgba(63, 185, 80, 0.15));
+  border: 1px solid var(--vscode-inputValidation-infoBorder, var(--right));
+}
+
+.ready .big {
+  font-size: 1.4em;
+  font-weight: 600;
+  color: var(--right);
+}
+
+footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: var(--gap);
+  border-top: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.25));
+  font-size: 0.9em;
+}
+
+/* highlight.js, in the editor's own colours where VS Code has a match */
+.hljs-keyword,
+.hljs-literal,
+.hljs-built_in {
+  color: var(--vscode-symbolIcon-keywordForeground, #c586c0);
+}
+.hljs-string,
+.hljs-regexp {
+  color: var(--vscode-debugTokenExpression-string, #ce9178);
+}
+.hljs-number {
+  color: var(--vscode-debugTokenExpression-number, #b5cea8);
+}
+.hljs-comment {
+  color: var(--vscode-descriptionForeground, #6a9955);
+  font-style: italic;
+}
+.hljs-title,
+.hljs-function .hljs-title,
+.hljs-title.function_ {
+  color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+}
+.hljs-type,
+.hljs-title.class_ {
+  color: var(--vscode-symbolIcon-classForeground, #4ec9b0);
+}
+.hljs-attr,
+.hljs-property,
+.hljs-variable {
+  color: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
+}

@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/forward.sh\" prompt", "timeout": 5 }] }],
+    "PostToolUse": [{ "matcher": "Read", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/forward.sh\" read", "timeout": 5 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/forward.sh\" stop", "timeout": 5 }] }]
+  }
+}

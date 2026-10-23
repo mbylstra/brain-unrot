@@ -1,0 +1,65 @@
+{
+  "name": "brain-unrot",
+  "displayName": "Brain Unrot",
+  "description": "A quiz about your codebase to answer while Claude works",
+  "version": "0.1.0",
+  "publisher": "mbylstra",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mbylstra/brain-unrot"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "brainUnrot.showQuiz",
+        "title": "Brain Unrot: Show Quiz"
+      }
+    ],
+    "configuration": {
+      "title": "Brain Unrot",
+      "properties": {
+        "brainUnrot.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the claude CLI. When empty, it's found through your login shell."
+        },
+        "brainUnrot.reopenOnPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the quiz again when you send Claude a prompt after you closed it. When off, it stays closed until you run Brain Unrot: Show Quiz."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/vscode": "1.90",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.12",
+    "highlight.js": "^11.12.0",
+    "marked": "^15.0.12",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
