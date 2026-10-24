@@ -165,7 +165,9 @@ const sourceOf = (q: Question) =>
       ? `General concept: ${q.topic}`
       : q.category === 'instructions'
         ? "About the project's instructions for Claude"
-        : 'Warm-up question'
+        : q.category === 'plans'
+          ? "About the project's plans"
+          : 'Warm-up question'
 
 function claudeReady() {
   return h(
@@ -327,6 +329,12 @@ function render(view: View) {
         'div',
         { class: 'dim' },
         `Difficulty ${Math.floor(view.skill.difficulty)} out of ${view.difficultyMax} · ${view.ready} generated questions ready · ${view.tips} tidbits ready`,
+      ),
+      h(
+        'div',
+        { class: 'weights' },
+        h('span', { class: 'dim' }, `Weights: ${view.weights.map(w => `${w.name} ${w.weight}`).join(' · ')}`),
+        button('Reset weights', undefined, () => send({ type: 'resetWeights' })),
       ),
     ),
   )

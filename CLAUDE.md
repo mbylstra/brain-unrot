@@ -31,13 +31,13 @@ The user's marketplace is this clone, so the bridge runs whatever branch is chec
 - `src/panel.ts` and `webview/` are the panel. The webview only draws: the extension posts a full snapshot (`Quiz.view()`) on every change, and the webview posts actions back. The webview talks only through messages, so it could be served elsewhere later. Opening the panel must never take the keyboard focus (`preserveFocus`).
 - `bridge/` is a Claude Code plugin of plain command hooks (`forward.sh`). It must print nothing, never block, always exit 0, and do nothing when `BRAIN_UNROT_CHILD` is set.
 
-All model work goes through `askClaude`, which spawns `claude -p` with `--permission-mode dontAsk`, user settings only, hooks disabled and a strict MCP config. It sets `BRAIN_UNROT_CHILD` (`DISABLE_PLUGIN_ENV_VAR`) so the bridge stays quiet in that process. Each kind of job has its own tool and permission set (`CODE`, `CONCEPT`, `INSTRUCTIONS`, `EDIT` in `quiz.ts`). Keep these minimal, because they decide what the background Claude can do in the user's repo. The `claude` path comes from the `brainUnrot.claudePath` setting, or else a login shell and the usual install locations.
+All model work goes through `askClaude`, which spawns `claude -p` with `--permission-mode dontAsk`, user settings only, hooks disabled and a strict MCP config. It sets `BRAIN_UNROT_CHILD` (`DISABLE_PLUGIN_ENV_VAR`) so the bridge stays quiet in that process. Each kind of job has its own tool and permission set (`CODE`, `CONCEPT`, `INSTRUCTIONS`, `PLANS`, `EDIT` in `quiz.ts`). Keep these minimal, because they decide what the background Claude can do in the user's repo. The `claude` path comes from the `brainUnrot.claudePath` setting, or else a login shell and the usual install locations.
 
-Models: Haiku writes codebase and instruction questions. Sonnet writes general-programming ("concept") questions, and also does all tidbit research, because Haiku took the first search result at face value.
+Models: Haiku writes codebase, instruction and plan questions. Sonnet writes general-programming ("concept") questions, and also does all tidbit research, because Haiku took the first search result at face value.
 
 Persistence is plain JSON, one file per key, written atomically and read fresh each time (several windows share it):
 
-- `<project>/.brain-unrot/` (with its own `.gitignore` of `*`): `queue` (codebase and instruction questions), `answered`, `skill`, and `logs/`: the prompt and reply of every tidbit generation, one Markdown file per call
+- `<project>/.brain-unrot/` (with its own `.gitignore` of `*`): `queue` (codebase, instruction and plan questions), `answered`, `skill`, and `logs/`: the prompt and reply of every tidbit generation, one Markdown file per call
 - `~/.brain-unrot/`: `concepts` (concept questions, tagged with their `project`), `answered` (concept and seed questions), tidbits, `quiz:prefs`, `quiz:weights`, and `events.jsonl`
 
 When renaming a stored field or key, keep reading the old name.
@@ -51,6 +51,7 @@ Debugging: the extension logs to the **Brain Unrot** output channel, and the las
 - **seeds**: hand-written warm-up questions and tidbits in `src/core/seeds.ts`, shown until generated ones are ready
 - **concept question**: a general programming question, not about this repo
 - **instruction question**: a question about what the project tells coding agents, in its instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `SKILL.md` under `.claude/skills` or `.agents/skills`, and `.claude/agents` and `.claude/commands`) and the files they import with `@path`. It's about the instructions as a whole, or about one file (`sourceFile`)
+- **plan question**: a question about the project's plans, the `.md` files at any depth under `plans/` or `docs/plans/` (in `todo/`, `done/` or any other folder). About several plans, or one (`sourceFile`). Plans matter more than the code in general, so more are kept ready
 - **tidbit**: a short "did you know" tip about coding with LLMs (see `docs/plans/did-you-know.md`)
 - **difficulty**: 1–5 (formerly "level"). **skill** is the user's current difficulty plus their streak
 - **bridge**: the `brain-unrot-bridge` Claude Code plugin that forwards events to the extension

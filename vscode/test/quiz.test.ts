@@ -5,8 +5,8 @@ import type { Question } from '../src/core/types'
 import { MemoryStore, fakeHost, questionsJson } from './fake-host'
 
 // Only the given kind of round, and moving on never stops to ask anything first
-async function onlyRounds(global: MemoryStore, category: 'codebase' | 'concept' | 'instructions' | 'tidbit') {
-  await global.set('quiz:weights', { codebase: 0, concept: 0, instructions: 0, tidbit: 0, [category]: 1 })
+async function onlyRounds(global: MemoryStore, category: 'codebase' | 'concept' | 'instructions' | 'plans' | 'tidbit') {
+  await global.set('quiz:weights', { codebase: 0, concept: 0, instructions: 0, plans: 0, tidbit: 0, [category]: 1 })
   await global.set('quiz:prefs', { offerChance: 0, preferenceChance: 0 })
 }
 
@@ -265,9 +265,48 @@ test('instruction questions are written when the project has instruction files',
   expect(queue[0]).toMatchObject({ prompt: 'Which skill covers the frontend?', category: 'instructions' })
 })
 
+test('plan questions are written about .md files at any depth under plans/ and docs/plans/', async () => {
+  const { host, runs } = fakeHost({
+    files: {
+      '/repo/docs/plans/todo/sub/x.md': '# X',
+      '/repo/docs/plans/done/y.md': '# Y',
+      '/repo/docs/plans/todo/diagram.png': '',
+      '/repo/plans/z.md': '# Z',
+      '/repo/docs/other.md': '# Not a plan',
+    },
+    claude: () => questionsJson(['Which plan is still to do?']),
+  })
+  await host.project.set('queue', [1, 2, 3, 4, 5].map(n => question(`code ${n}`)))
+  const quiz = new Quiz(host)
+  await quiz.generate()
+
+  expect([...quiz.planFiles].sort()).toEqual(['docs/plans/done/y.md', 'docs/plans/todo/sub/x.md', 'plans/z.md'])
+  const prompt = runs.find(r => r.argv[1] === '-p')!.argv
+  expect(prompt[2]).toContain("know their project's plans")
+  expect(prompt[2]).toContain('- docs/plans/todo/sub/x.md')
+  expect(prompt[2]).not.toContain('diagram.png')
+  // No Bash for plan questions
+  expect(prompt[prompt.indexOf('--tools') + 1]).toBe('Read,Grep,Glob')
+  const queue = (await host.project.get('queue')) as Question[]
+  expect(queue[0]).toMatchObject({ prompt: 'Which plan is still to do?', category: 'plans' })
+})
+
+test('a plan Claude read gets plan questions, and they are weighted like the rest by default', async () => {
+  const { host, runs } = fakeHost({ claude: () => questionsJson(['Why does the plan cache tidbits?']) })
+  const quiz = new Quiz(host)
+  quiz.onRead('/repo/docs/plans/WIP/cache.md')
+  await quiz.generate()
+
+  const prompt = runs.find(r => r.argv[1] === '-p')!.argv
+  expect(prompt[2]).toContain('Read docs/plans/WIP/cache.md, one of its plans')
+  const queue = (await host.project.get('queue')) as Question[]
+  expect(queue[0]).toMatchObject({ category: 'plans', sourceFile: 'docs/plans/WIP/cache.md' })
+  expect(await quiz.loadWeights()).toMatchObject({ codebase: 1, plans: 1 })
+})
+
 test('saying yes to more about a file puts its questions first', async () => {
   const { host } = fakeHost()
-  await host.global.set('quiz:weights', { codebase: 1, concept: 0, instructions: 0, tidbit: 0 })
+  await host.global.set('quiz:weights', { codebase: 1, concept: 0, instructions: 0, plans: 0, tidbit: 0 })
   await host.global.set('quiz:prefs', { offerChance: 1, preferenceChance: 0 })
   await host.project.set('queue', [question('about a'), question('about b', { sourceFile: 'src/b.ts' }), question('more about a'), question('again about a')])
   const quiz = new Quiz(host)
@@ -278,6 +317,20 @@ test('saying yes to more about a file puts its questions first', async () => {
   expect(quiz.state.round).toMatchObject({ kind: 'question', isOffering: true })
   await quiz.act({ type: 'moreAboutFile', isYes: true })
   expect(shown(quiz).prompt).toBe('more about a')
+})
+
+test('the weights are always in the view, and resetting them goes back to the defaults', async () => {
+  const { host } = fakeHost()
+  await host.global.set('quiz:weights', { codebase: 4, concept: 0, instructions: 1, plans: 3, tidbit: 2 })
+  const quiz = new Quiz(host)
+  expect((await quiz.view()).weights).toEqual([
+    { category: 'codebase', name: 'Codebase', weight: 4 },
+    { category: 'concept', name: 'Concepts', weight: 0 },
+    { category: 'tidbit', name: 'Tidbits', weight: 2 },
+  ])
+
+  await quiz.act({ type: 'resetWeights' })
+  expect(await quiz.loadWeights()).toEqual({ codebase: 1, concept: 1, instructions: 1, plans: 1, tidbit: 1 })
 })
 
 test('parsers', () => {

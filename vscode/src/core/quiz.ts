@@ -41,6 +41,17 @@ const INSTRUCTIONS_RECHECK_MS = 60_000
 const INSTRUCTIONS_SAMPLE = 5
 // They read the instruction files and the files those import: no Bash
 const INSTRUCTIONS = { model: MODEL, tools: ['Read', 'Grep', 'Glob'] }
+// Plan questions are about the project's plans: any .md file at any depth under plans/ or docs/plans/.
+// They matter more than the code in general, so more are kept ready
+const PLANS_LOW = 3
+// How often to look again for plan files, and how many are sent with each top-up
+const PLANS_RECHECK_MS = 60_000
+const PLANS_SAMPLE = 4
+// How deep to look under a plans folder, and how many plan files to keep at most
+const PLANS_DEPTH = 6
+const PLANS_MAX = 500
+// They read the plans and the code they mention: no Bash
+const PLANS = { model: MODEL, tools: ['Read', 'Grep', 'Glob'] }
 // The quiz chat and issue filing may also edit files in the repo, e.g. to update a plan the developer asks about
 const EDIT = { ...CODE, tools: [...CODE.tools, 'Edit', 'Write'], allowed: [...CODE.allowed, 'Edit(./**)'] }
 // The guess recorded for "Absolutely no idea"
@@ -60,8 +71,16 @@ export const CATEGORIES: [Category, string][] = [
   ['codebase', 'Questions about files in this project'],
   ['concept', 'General programming questions'],
   ['instructions', "Questions about the project's instructions for Claude (CLAUDE.md, AGENTS.md, skills)"],
+  ['plans', "Questions about the project's plans (plans/, docs/plans/)"],
   ['tidbit', '"Did you know" tidbits'],
 ]
+
+// What the footer calls each kind of round, beside its weight
+const CATEGORY_NAMES: Record<Category, string> = { codebase: 'Codebase', concept: 'Concepts', instructions: 'Instructions', plans: 'Plans', tidbit: 'Tidbits' }
+
+const PLAN_DIRS = ['plans', 'docs/plans']
+
+const isPlanFile = (path: string) => path.endsWith('.md') && PLAN_DIRS.some(dir => path.startsWith(`${dir}/`))
 
 // The instruction files at the repo root, and where skills, subagents and commands live:
 // each skill is a folder with a SKILL.md, each subagent or command one .md file
@@ -98,6 +117,14 @@ const INSTRUCTION_DIFFICULTIES: Record<number, string> = {
   3: 'medium: when a rule, skill or subagent applies, and how the files import or point to each other',
   4: 'hard: why a rule exists, what goes wrong if the agent ignores it',
   5: 'expert: which instruction wins when files disagree, cases the instructions leave open',
+}
+
+const PLAN_DIFFICULTIES: Record<number, string> = {
+  1: 'extremely easy: what a plan is for, which plan covers what, whether it is done or still to do',
+  2: 'easy: a decision or step stated plainly in a plan',
+  3: 'medium: why a plan chose one approach over another, what it depends on, how plans relate',
+  4: 'hard: the trade-offs a plan weighs, what goes wrong if a step is skipped or done out of order',
+  5: 'expert: open questions and risks a plan leaves, where plans conflict, how a plan fits what the code does now',
 }
 
 // What each concept topic covers, and how often it comes up: the project's own stack leads
@@ -140,6 +167,7 @@ export type Action =
   | { type: 'cancelIssue' }
   | { type: 'react'; reaction: Reaction }
   | { type: 'prefer'; category?: Category }
+  | { type: 'resetWeights' }
   | { type: 'moreAboutFile'; isYes: boolean }
 
 // Models (and the seeds) put the right answer first far too often
@@ -280,12 +308,51 @@ ${aimAt(difficulty, INSTRUCTION_DIFFICULTIES)}
 
 ${INSTRUCTIONS_FORMAT}${avoid}`
 
+const PLANS_FORMAT = `Each question must have exactly 4 choices and exactly one correct answer, and be answerable from the plans. Keep questions and choices short; put file names, commands and identifiers in backticks.
+
+Reply with JSON only, no prose and no code fence:
+[{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "sourceFile": "<path of the plan it is about, relative to the repo root; leave it out for a question about several plans>"}]`
+
+const PLANS_INTRO =
+  "You write quiz questions that help a developer know their project's plans: what each plan sets out to do, what it decided and why, what's done and what's still open."
+
+const PLAN_STATUS =
+  'The folder a plan is in usually says where it stands (e.g. `todo/`, `WIP/`, `done/`). You may read the code a plan mentions to see how it turned out.'
+
+const PLANS_PROMPT = (files: string[], difficulty: number, avoid: string) => `${PLANS_INTRO} The project is the current directory.
+
+Some of its plans are:
+${files.map(f => `- ${f}`).join('\n')}
+
+Read them (at most 8 files in all). ${PLAN_STATUS}
+
+Write 3 multiple-choice questions: at least one drawing on several plans (e.g. which plan covers a feature, which one is still to do), with no \`sourceFile\`, and the rest about one plan in particular. Ask what the plans decide and why, not how a sentence is worded.
+
+${aimAt(difficulty, PLAN_DIFFICULTIES)}
+
+${PLANS_FORMAT}${avoid}`
+
+const PLAN_FILE_PROMPT = (file: string, difficulty: number, avoid: string) => `${PLANS_INTRO} The project is the current directory.
+
+Read ${file}, one of its plans, and write 2 multiple-choice questions about what it sets out to do, what it decided and why. ${PLAN_STATUS}
+
+${aimAt(difficulty, PLAN_DIFFICULTIES)}
+
+${PLANS_FORMAT}${avoid}`
+
 // The root files (CLAUDE.md, AGENTS.md), then a random few of the others, in the order found
 function sampleInstructionFiles(files: string[]): string[] {
   const rest = files.filter(f => !INSTRUCTION_FILE_NAMES.includes(f))
   const picked = new Set<string>()
   while (picked.size < Math.min(rest.length, INSTRUCTIONS_SAMPLE - (files.length - rest.length))) picked.add(rest[random(rest.length)]!)
   return files.filter(f => !rest.includes(f) || picked.has(f))
+}
+
+// A random few of the plans, in the order found
+function samplePlanFiles(files: string[]): string[] {
+  const picked = new Set<string>()
+  while (picked.size < Math.min(files.length, PLANS_SAMPLE)) picked.add(files[random(files.length)]!)
+  return files.filter(f => picked.has(f))
 }
 
 export function parseQuestions(text: string, difficulty: number, file?: string): Question[] {
@@ -331,7 +398,9 @@ const CHAT_PROMPT = (q: Question, chat: Message[], guess: number | null) => `You
     ? `about a general programming concept (${q.topic}). Their project is the current directory: you may relate the concept to it.`
     : categoryOf(q) === 'instructions'
       ? 'about what the project in the current directory tells coding agents, in its instruction files (`CLAUDE.md`, `AGENTS.md`, skills) and the files they import.'
-      : 'about the codebase in the current directory.'
+      : categoryOf(q) === 'plans'
+        ? 'about the plans of the project in the current directory (the `.md` files under `plans/` or `docs/plans/`).'
+        : 'about the codebase in the current directory.'
 } ${
   guess === null ? "They've asked a clarifying question before choosing an answer." : 'They have answered and seen the correct answer, and have a question about it.'
 }
@@ -344,7 +413,9 @@ ${q.choices.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
 ${
   guess === null
-    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses${isConcept(q) ? '' : categoryOf(q) === 'instructions' ? ', and the instructions around it' : ', and the surrounding code'}, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
+    ? `The correct answer is ${q.answer + 1}. Never reveal it, hint at it, or rule choices in or out: explain what the question means, the terms and concepts it uses${
+        isConcept(q) ? '' : categoryOf(q) === 'instructions' ? ', and the instructions around it' : categoryOf(q) === 'plans' ? ', and the plan around it' : ', and the surrounding code'
+      }, so they can work it out themselves. You may read the code. If they ask for the answer, say they can pick a choice or skip.`
     : `The correct answer is ${q.answer + 1}.${q.explanation ? ` ${q.explanation}` : ''} They chose ${
         guess === NO_IDEA ? '"Absolutely no idea"' : guess + 1
       }. Help them understand why the answer is right and the others are not. You may read the code.`
@@ -385,7 +456,9 @@ Source: ${about.tidbit.url}`
             ? `about a general programming concept (${about.question.topic})`
             : categoryOf(about.question) === 'instructions'
               ? "about the project's instructions for coding agents (`CLAUDE.md`, `AGENTS.md`, skills)"
-              : 'about the codebase in the current directory'
+              : categoryOf(about.question) === 'plans'
+                ? "about the project's plans (`plans/`, `docs/plans/`)"
+                : 'about the codebase in the current directory'
         } and noticed something that could be improved or fixed. Rewrite their note as a short, clear issue for the repository.
 
 The question${about.question.sourceFile ? ` (about ${about.question.sourceFile})` : ''}:
@@ -482,11 +555,14 @@ export class Quiz {
   // The file being written about, while it is
   private generatingFile: string | undefined
   // The kinds of question topped up when too few are ready, in the order they take turns, and the one topped up last
-  private static readonly TOP_UPS = ['codebase', 'concept', 'instructions'] as const
+  private static readonly TOP_UPS = ['codebase', 'plans', 'concept', 'instructions'] as const
   private lastTopUp: (typeof Quiz.TOP_UPS)[number] = 'instructions'
   // The project's instruction files, relative to the root, and when they were last looked for
   instructionFiles: string[] = []
   private instructionsCheckedAt = -Infinity
+  // The project's plans, relative to the root, and when they were last looked for
+  planFiles: string[] = []
+  private plansCheckedAt = -Infinity
   private retryAt = 0
   // The file you asked for more questions about: its questions come first, ahead of concept
   // questions and tidbits, until none are left or being written
@@ -600,7 +676,7 @@ export class Quiz {
 
   async loadWeights(): Promise<CategoryWeights> {
     const stored = (await this.host.global.get(weightsKey)) as Partial<CategoryWeights> | undefined
-    return { codebase: 1, concept: 1, instructions: 1, tidbit: 1, ...stored }
+    return { codebase: 1, concept: 1, instructions: 1, plans: 1, tidbit: 1, ...stored }
   }
 
   private async prefer(category: Category) {
@@ -608,6 +684,12 @@ export class Quiz {
     const next = { ...weights, [category]: weights[category] + 1 }
     await this.host.global.set(weightsKey, next)
     this.debug(`prefer ${category}: ${CATEGORIES.map(([c]) => next[c]).join(':')}`)
+  }
+
+  // Back to the defaults; an empty object means every kind takes its default
+  private async resetWeights() {
+    await this.host.global.set(weightsKey, {})
+    this.debug('weights reset')
   }
 
   // Yes: the file's questions go to the front, and more are written if too few fit your difficulty.
@@ -810,6 +892,9 @@ export class Quiz {
         return this.endRound()
       case 'cancelIssue':
         return this.updateRound(r => (r ? { ...r, issue: undefined } : r))
+      case 'resetWeights':
+        await this.resetWeights()
+        return this.update({})
     }
     if (!current) return
     const id = current.kind === 'tidbit' ? current.tidbit.id : current.question.id
@@ -879,15 +964,19 @@ export class Quiz {
   async view() {
     const round = this.state.round
     const weights = await this.loadWeights()
-    // Instruction questions are only offered in a project that has instruction files
-    const hasInstructions = this.instructionFiles.length > 0 || (await this.loadQueue()).some(q => categoryOf(q) === 'instructions')
-    const categories = CATEGORIES.filter(([category]) => category !== 'instructions' || hasInstructions)
+    // Instruction and plan questions are only offered in a project that has those files
+    const queue = await this.loadQueue()
+    const has = (category: 'instructions' | 'plans', files: string[]) => files.length > 0 || queue.some(q => categoryOf(q) === category)
+    const isOffered = { instructions: has('instructions', this.instructionFiles), plans: has('plans', this.planFiles) }
+    const categories = CATEGORIES.filter(([category]) => (category !== 'instructions' && category !== 'plans') || isOffered[category])
     return {
       ...this.state,
       root: this.host.root,
       difficultyMax: DIFFICULTY_MAX,
       issuesDir: ISSUES_DIR,
       isClaudeFinished: this.isClaudeFinished,
+      // Shown in the footer all the time
+      weights: categories.map(([category]) => ({ category, name: CATEGORY_NAMES[category], weight: weights[category] })),
       preference: this.state.isAskingPreference ? { categories: categories.map(([category, label]) => ({ category, label, weight: weights[category] })) } : undefined,
       tidbitSource: round?.kind === 'tidbit' ? sourceLine(round.tidbit, this.host.now(), await installedVersion(this.host)) : undefined,
     }
@@ -969,7 +1058,9 @@ export class Quiz {
                     ? ` about ${about.question.topic}`
                     : categoryOf(about.question) === 'instructions'
                       ? " about the project's instructions for coding agents"
-                      : ''
+                      : categoryOf(about.question) === 'plans'
+                        ? " about the project's plans"
+                        : ''
               }:`,
               '',
               `> ${about.question.prompt}`,
@@ -1013,13 +1104,38 @@ export class Quiz {
     return found
   }
 
+  // The project's plans: .md files at any depth under plans/ and docs/plans/, relative to the root.
+  // Symlinks show as folders, so the depth is capped, and a file linked twice is listed once
+  private async findPlanFiles(): Promise<string[]> {
+    const root = this.host.root
+    const found: string[] = []
+    const seen = new Set<string>()
+    const walk = async (dir: string, depth: number) => {
+      const entries = await this.host.fs.list(`${root}/${dir}`).catch(() => [])
+      for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+        if (found.length >= PLANS_MAX) return
+        const path = `${dir}/${entry.name}`
+        if (entry.kind === 'file' && entry.name.endsWith('.md')) {
+          const real = await this.host.fs.realPath(`${root}/${path}`).catch(() => path)
+          if (seen.has(real)) continue
+          seen.add(real)
+          found.push(path)
+        } else if (entry.kind === 'directory' && depth < PLANS_DEPTH) {
+          await walk(path, depth + 1)
+        }
+      }
+    }
+    for (const dir of PLAN_DIRS) await walk(dir, 1)
+    return found
+  }
+
   async generate() {
     const host = this.host
     if (this.isGenerating || host.now() < this.retryAt) return
     const queue = await this.loadQueue()
     const s = await this.loadSkill()
     // A file Claude read comes first; otherwise top up whichever kind has too few at or below
-    // your difficulty, taking turns when several do. Instruction questions need instruction files
+    // your difficulty, taking turns when several do. Instruction and plan questions need those files
     const file = this.pending.shift()
     const fitting = queue.filter(q => fits(q, s))
     const count = (category: Category) => fitting.filter(q => categoryOf(q) === category).length
@@ -1030,15 +1146,28 @@ export class Quiz {
       this.instructionFiles = await this.findInstructionFiles()
       this.debug(`instruction files: ${this.instructionFiles.join(', ') || '(none)'}`)
     }
+    if (file === undefined && count('plans') < PLANS_LOW && now - this.plansCheckedAt >= PLANS_RECHECK_MS) {
+      this.plansCheckedAt = now
+      this.planFiles = await this.findPlanFiles()
+      this.debug(`plan files: ${this.planFiles.length > 0 ? `${this.planFiles.length} found` : '(none)'}`)
+    }
     const isLow = {
       codebase: count('codebase') < QUEUE_LOW,
       concept: count('concept') < CONCEPTS_LOW,
       instructions: this.instructionFiles.length > 0 && count('instructions') < INSTRUCTIONS_LOW,
+      plans: this.planFiles.length > 0 && count('plans') < PLANS_LOW,
     }
     const turn = [...Quiz.TOP_UPS.slice(Quiz.TOP_UPS.indexOf(this.lastTopUp) + 1), ...Quiz.TOP_UPS].find(c => isLow[c])
     if (file === undefined && turn === undefined) return
     const shown = file?.startsWith(root + '/') ? file.slice(root.length + 1) : file
-    const kind = shown === undefined ? turn! : isInstructionFile(shown) || this.instructionSources.has(shown) ? 'instructions' : 'codebase'
+    const kind =
+      shown === undefined
+        ? turn!
+        : isPlanFile(shown)
+          ? 'plans'
+          : isInstructionFile(shown) || this.instructionSources.has(shown)
+            ? 'instructions'
+            : 'codebase'
     const difficulty = difficultyOf(s)
     // Concept questions avoid concept questions; the rest avoid this project's questions
     const scope: Scope = kind === 'concept' ? 'global' : 'project'
@@ -1047,7 +1176,7 @@ export class Quiz {
     this.isGenerating = true
     this.generatingFile = file
     const [topic, focus] = kind === 'concept' ? pickTopic() : []
-    const label = topic ? `concept ${topic}` : kind === 'instructions' ? `instructions ${shown ?? '(all)'}` : (shown ?? 'repo')
+    const label = topic ? `concept ${topic}` : kind === 'instructions' || kind === 'plans' ? `${kind} ${shown ?? '(all)'}` : (shown ?? 'repo')
     try {
       this.debug(`generate ${label} at difficulty ${difficulty}: asking claude`)
       const avoid = avoiding(
@@ -1064,18 +1193,22 @@ export class Quiz {
             ? shown
               ? INSTRUCTION_FILE_PROMPT(shown, difficulty, avoid)
               : INSTRUCTIONS_PROMPT(sampleInstructionFiles(this.instructionFiles), difficulty, avoid)
-            : shown
-              ? FILE_PROMPT(shown, difficulty, avoid)
-              : REPO_PROMPT(difficulty, avoid)
-      const { text: reply } = await askClaude(host, prompt, { ...(topic ? CONCEPT : kind === 'instructions' ? INSTRUCTIONS : CODE), cwd: root })
+            : kind === 'plans'
+              ? shown
+                ? PLAN_FILE_PROMPT(shown, difficulty, avoid)
+                : PLANS_PROMPT(samplePlanFiles(this.planFiles), difficulty, avoid)
+              : shown
+                ? FILE_PROMPT(shown, difficulty, avoid)
+                : REPO_PROMPT(difficulty, avoid)
+      const { text: reply } = await askClaude(host, prompt, { ...(topic ? CONCEPT : kind === 'instructions' ? INSTRUCTIONS : kind === 'plans' ? PLANS : CODE), cwd: root })
       // The avoid list is only a request, so drop any repeat of a question answered right
       const known = new Set(answered.map(a => said(a.prompt)))
       const parsed = parseQuestions(reply, difficulty, shown)
       const questions = (
         topic
           ? parsed.map((q, i): Question => ({ ...q, id: `concept:${topic}#${Date.now()}-${i}`, sourceFile: undefined, category: 'concept', topic, project: root }))
-          : kind === 'instructions'
-            ? parsed.map((q, i): Question => ({ ...q, id: `instructions:${q.sourceFile ?? 'all'}#${Date.now()}-${i}`, category: 'instructions' }))
+          : kind === 'instructions' || kind === 'plans'
+            ? parsed.map((q, i): Question => ({ ...q, id: `${kind}:${q.sourceFile ?? 'all'}#${Date.now()}-${i}`, category: kind }))
             : parsed
       ).filter(q => !known.has(said(q.prompt)))
       this.debug(`generate ${label}: ${questions.length} questions`)
@@ -1083,10 +1216,14 @@ export class Quiz {
         await this.withQueue(async current => [[...questions, ...current], undefined])
       } else {
         this.debug(`generate ${label}: unparsed reply ${JSON.stringify(reply.slice(0, 300))}`)
-        // Leave instruction questions be until the files are looked for again, rather than ask every tick
+        // Leave instruction or plan questions be until the files are looked for again, rather than ask every tick
         if (kind === 'instructions' && !shown) {
           this.instructionFiles = []
           this.instructionsCheckedAt = host.now()
+        }
+        if (kind === 'plans' && !shown) {
+          this.planFiles = []
+          this.plansCheckedAt = host.now()
         }
       }
     } catch (err) {
