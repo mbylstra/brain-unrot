@@ -100,6 +100,10 @@ function box(key: string, placeholder: string, submitLabel: string, onSubmit: (t
   if (!area) {
     const el = h('textarea', { rows: '3' }) as HTMLTextAreaElement
     el.addEventListener('keydown', e => {
+      // VS Code forwards key presses from the webview's window to its own keybindings, where
+      // `inputFocus` is false, so a binding like "space a" would fire while typing. Keep plain keys
+      // here, and let ones with a modifier through so Cmd+S and the like still work.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey) e.stopPropagation()
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         submitBox(key)
