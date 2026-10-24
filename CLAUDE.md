@@ -37,7 +37,7 @@ Models: Haiku writes codebase and instruction questions. Sonnet writes general-p
 
 Persistence is plain JSON, one file per key, written atomically and read fresh each time (several windows share it):
 
-- `<project>/.brain-unrot/` (with its own `.gitignore` of `*`): `queue` (codebase and instruction questions), `answered`, `skill`
+- `<project>/.brain-unrot/` (with its own `.gitignore` of `*`): `queue` (codebase and instruction questions), `answered`, `skill`, and `logs/`: the prompt and reply of every tidbit generation, one Markdown file per call
 - `~/.brain-unrot/`: `concepts` (concept questions, tagged with their `project`), `answered` (concept and seed questions), tidbits, `quiz:prefs`, `quiz:weights`, and `events.jsonl`
 
 When renaming a stored field or key, keep reading the old name.

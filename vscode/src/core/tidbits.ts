@@ -2,7 +2,7 @@
 import type { Host } from '../host'
 
 import type { Message, Prefs, Reaction, ShownTidbit, Tidbit, Topic } from './types'
-import { askClaude, random } from './claude'
+import { askClaude, random, type Ask } from './claude'
 import { SEED_TIDBITS } from './seeds'
 
 // Sonnet for everything tidbit-related: Haiku took the first search result at face value
@@ -260,6 +260,24 @@ const flagsOk = (t: Pick<Tidbit, 'headline' | 'body' | 'tryIt'>, help: string) =
   return [...text.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]+)/g)].every(([flag]) => help.includes(flag!))
 }
 
+// --- Logs ---
+
+// Each generation's prompt and the model's reply, one file per call, in <root>/.brain-unrot/logs/
+// (gitignored with the rest of that folder), so you can see why tidbits came out as they did
+async function askLogged(host: Host, lane: 'changelog' | 'research', prompt: string, ask: Ask) {
+  const path = `${host.root}/.brain-unrot/logs/${new Date(host.now()).toISOString().replace(/[:.]/g, '-')}-tidbits-${lane}.md`
+  const write = (output: string) =>
+    host.fs.write(path, `# Tidbits: ${lane}\n\nModel: ${ask.model}\n\n## Prompt\n\n${prompt}\n\n## Output\n\n${output}\n`).catch(err => host.log(`tidbit log: ${String(err)}`))
+  try {
+    const answer = await askClaude(host, prompt, ask)
+    await write(`Cost: $${answer.cost ?? '?'}\n\n### Text\n\n${answer.text}\n\n### Data\n\n\`\`\`json\n${JSON.stringify(answer.data, null, 2)}\n\`\`\``)
+    return answer
+  } catch (err) {
+    await write(`Failed: ${String(err)}`)
+    throw err
+  }
+}
+
 async function claudeOutput(host: Host, arg: string): Promise<string> {
   try {
     const { exitCode, stdout } = await host.run(['claude', arg])
@@ -378,7 +396,7 @@ async function fromChangelog(host: Host, now: number): Promise<Tidbit[]> {
   }
 
   const prefs = await loadPrefs(host)
-  const { data, cost } = await askClaude(host, CHANGELOG_PROMPT(fresh, day(now), prefs.level), {
+  const { data, cost } = await askLogged(host, 'changelog', CHANGELOG_PROMPT(fresh, day(now), prefs.level), {
     model: TIDBIT_MODEL,
     tools: [],
     cwd: host.globalDir,
@@ -464,7 +482,7 @@ async function research(host: Host, now: number): Promise<Tidbit[]> {
   const headlines = [...(await loadTidbits(host)), ...(await loadHistory(host)), ...SEED_TIDBITS].map(t => t.headline)
   const avoid = [...new Map(headlines.map(h => [said(h), h])).values()]
   host.log(`research ${topic}: asking claude`)
-  const { data, cost } = await askClaude(host, RESEARCH_PROMPT(topic, day(now), day(now - WINDOW), prefs.level, avoid), {
+  const { data, cost } = await askLogged(host, 'research', RESEARCH_PROMPT(topic, day(now), day(now - WINDOW), prefs.level, avoid), {
     model: TIDBIT_MODEL,
     tools: ['WebSearch', 'WebFetch'],
     allowed: ['WebSearch', 'WebFetch'],
