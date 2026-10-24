@@ -1,5 +1,7 @@
 # Stop repeating questions and tidbits
 
+Status: done on 2026-10-24. All five steps are built as planned. The tidbit research test is in `vscode/test/tidbits.test.ts`, and skipped questions are still remembered (see the open question below). Not yet tried in the packaged extension.
+
 ## Context
 
 The quiz keeps asking questions, and showing tidbits, that are the same as
@@ -123,6 +125,8 @@ Tidbits aren't answered, so for them, shown means known.
   the research prompt.
 
 ## Open question: skipped questions
+
+Decided: kept as it is. A skipped question is remembered and stays in the avoid list.
 
 A skipped question is remembered as well (`quiz.ts:846`), so it's never
 asked again and goes into the avoid list. The request was to avoid only

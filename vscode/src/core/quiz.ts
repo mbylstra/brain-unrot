@@ -13,9 +13,9 @@ import { askAboutTidbit, installedVersion, nextTidbit, react, refresh, sourceLin
 
 const MODEL = 'haiku'
 const QUEUE_MAX = 30
-// Prompts answered right or skipped that are remembered, and how many of them generation is told to avoid
-const ANSWERED_MAX = 200
-const AVOID_MAX = 50
+// Prompts answered right or skipped that are remembered. Generation is told to avoid all of them,
+// so this only stops the list growing forever
+const ANSWERED_MAX = 2000
 // Below this many ready questions, generate some about the repo as a whole
 const QUEUE_LOW = 5
 export const TICK_MS = 3000
@@ -194,10 +194,23 @@ const FORMAT = `Each question must have exactly 4 choices and exactly one correc
 Reply with JSON only, no prose and no code fence:
 [{"prompt": "...", "choices": ["...", "...", "...", "..."], "answer": <index of the correct choice>, "explanation": "<one sentence>", "sourceFile": "<path of the file it is about, relative to the repo root>"}]`
 
-// Questions waiting in the queue, and ones already answered right
-const avoiding = (queue: Question[], answered: string[]) => {
-  const prompts = [...queue.map(q => q.prompt), ...answered.slice(-AVOID_MAX)]
-  return prompts.length === 0 ? '' : `\n\nDon't repeat these questions:\n${prompts.map(p => `- ${p}`).join('\n')}`
+// Every question already answered right, and the ones waiting in the queue. For a concept topic, the
+// questions on it come first, so the closest ones don't get lost in a long list
+const avoiding = (queue: Question[], answered: Answered[], topic?: ConceptTopic) => {
+  const list = (prompts: string[]) => prompts.map(p => `- ${p}`).join('\n')
+  const onTopic = topic === undefined ? [] : answered.filter(a => a.topic === topic)
+  const rest = answered.filter(a => !onTopic.includes(a))
+  const done =
+    answered.length === 0
+      ? ''
+      : `\n\nThe developer has already answered these questions correctly. Don't write a question that tests the same idea as any of them, even in other words or with a different example. Pick ideas they haven't been asked about.${
+          onTopic.length === 0
+            ? `\n${list(rest.map(a => a.prompt))}`
+            : `\n\nOn this topic:\n${list(onTopic.map(a => a.prompt))}${rest.length === 0 ? '' : `\n\nOn other topics:\n${list(rest.map(a => a.prompt))}`}`
+        }`
+  const waiting =
+    queue.length === 0 ? '' : `\n\nThese questions are waiting to be asked soon, so don't repeat them either:\n${list(queue.map(q => q.prompt))}`
+  return done + waiting
 }
 
 const aimAt = (difficulty: number, levels = DIFFICULTIES) =>
@@ -423,6 +436,8 @@ type Scope = 'project' | 'global'
 const scopeOf = (q: Question): Scope => (isConcept(q) ? 'global' : 'project')
 const QUEUE_KEY: Record<Scope, string> = { project: 'queue', global: 'concepts' }
 const ANSWERED_KEY: Record<Scope, string> = { project: 'answered', global: 'answered' }
+// One entry in an answered list. `at` is when it was answered. Older lists hold plain prompts
+type Answered = { prompt: string; topic?: ConceptTopic; at?: string }
 
 const quizPrefsKey = 'quiz:prefs'
 // How often each kind of round comes up, kept across projects. All start at 1
@@ -545,19 +560,24 @@ export class Quiz {
   // Prompts answered right or skipped, so they aren't asked again. Generated ids change each time,
   // so a question is known by its prompt. Codebase and instruction prompts are kept per project,
   // concept prompts (and seed questions, which are general) globally
-  private async loadAnsweredIn(scope: Scope): Promise<string[]> {
+  private async loadAnsweredIn(scope: Scope): Promise<Answered[]> {
     const stored = await this.store(scope).get(ANSWERED_KEY[scope])
-    return Array.isArray(stored) ? (stored as string[]) : []
+    if (!Array.isArray(stored)) return []
+    return stored.flatMap((a): Answered[] =>
+      typeof a === 'string' ? [{ prompt: a }] : typeof a?.prompt === 'string' ? [a as Answered] : [],
+    )
   }
 
+  // The prompts answered right or skipped, in this project and globally
   private async loadAnswered(): Promise<string[]> {
-    return [...(await this.loadAnsweredIn('project')), ...(await this.loadAnsweredIn('global'))]
+    return [...(await this.loadAnsweredIn('project')), ...(await this.loadAnsweredIn('global'))].map(a => a.prompt)
   }
 
   private async remember(q: Question) {
     const scope = SEEDS.some(seed => seed.id === q.id) ? 'global' : scopeOf(q)
-    const answered = (await this.loadAnsweredIn(scope)).filter(p => said(p) !== said(q.prompt))
-    await this.store(scope).set(ANSWERED_KEY[scope], [...answered, q.prompt].slice(-ANSWERED_MAX))
+    const answered = (await this.loadAnsweredIn(scope)).filter(a => said(a.prompt) !== said(q.prompt))
+    const entry: Answered = { prompt: q.prompt, topic: q.topic, at: new Date(this.host.now()).toISOString() }
+    await this.store(scope).set(ANSWERED_KEY[scope], [...answered, entry].slice(-ANSWERED_MAX))
   }
 
   // A question answered wrong goes to the back of its queue, to come round again later.
@@ -1033,6 +1053,7 @@ export class Quiz {
       const avoid = avoiding(
         queue.filter(q => scopeOf(q) === scope),
         answered,
+        topic,
       )
       if (file === undefined) this.lastTopUp = kind
       if (topic) lastTopic = topic
@@ -1048,7 +1069,7 @@ export class Quiz {
               : REPO_PROMPT(difficulty, avoid)
       const { text: reply } = await askClaude(host, prompt, { ...(topic ? CONCEPT : kind === 'instructions' ? INSTRUCTIONS : CODE), cwd: root })
       // The avoid list is only a request, so drop any repeat of a question answered right
-      const known = new Set(answered.map(said))
+      const known = new Set(answered.map(a => said(a.prompt)))
       const parsed = parseQuestions(reply, difficulty, shown)
       const questions = (
         topic

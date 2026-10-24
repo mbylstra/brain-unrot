@@ -72,7 +72,7 @@ test('concept questions are kept globally, tagged with their project, and any pr
 
   // Answered right: remembered globally, not in project b
   await quiz.act({ type: 'choose', index: shown(quiz).answer })
-  expect(await global.get('answered')).toEqual(['When would you use a queue?'])
+  expect(await global.get('answered')).toEqual([{ prompt: 'When would you use a queue?', topic: concepts[0]!.topic, at: '2026-10-23T00:00:00.000Z' }])
   expect(await b.host.project.get('answered')).toBeUndefined()
 })
 
@@ -90,7 +90,57 @@ test('a wrong answer sends the question to the back of the queue; a right one is
   await quiz.act({ type: 'next' })
   expect(shown(quiz).prompt).toBe('second')
   await quiz.act({ type: 'choose', index: shown(quiz).answer })
-  expect(await host.project.get('answered')).toEqual(['second'])
+  expect(await host.project.get('answered')).toEqual([{ prompt: 'second', at: '2026-10-23T00:00:00.000Z' }])
+})
+
+test('answered lists in the old format, plain prompts, still count as answered', async () => {
+  const { host } = fakeHost()
+  await onlyRounds(host.global as MemoryStore, 'codebase')
+  await host.project.set('queue', [question('first'), question('second')])
+  await host.project.set('answered', ['first'])
+  const quiz = new Quiz(host)
+  await quiz.newRound()
+  expect(shown(quiz).prompt).toBe('second')
+
+  await quiz.act({ type: 'choose', index: shown(quiz).answer })
+  expect(await host.project.get('answered')).toEqual([{ prompt: 'first' }, { prompt: 'second', at: '2026-10-23T00:00:00.000Z' }])
+})
+
+test('generation is told about every question answered right, not just the latest', async () => {
+  const { host, runs } = fakeHost({ claude: () => questionsJson(['What does `a` do?']) })
+  const answered = Array.from({ length: 120 }, (_, n) => ({ prompt: `answered ${n}` }))
+  await host.project.set('answered', answered)
+  await host.project.set('queue', [question('waiting')])
+  const quiz = new Quiz(host)
+  quiz.onRead('/repo/src/a.ts')
+  await quiz.generate()
+
+  const prompt = runs.find(r => r.argv[1] === '-p')!.argv[2]!
+  expect(prompt).toContain("Don't write a question that tests the same idea as any of them")
+  for (const a of answered) expect(prompt).toContain(`- ${a.prompt}\n`)
+  expect(prompt).toContain("These questions are waiting to be asked soon, so don't repeat them either:\n- waiting")
+})
+
+test('a concept prompt lists the questions answered on its own topic first', async () => {
+  const topics = [
+    "the project's languages and frameworks",
+    'frontend',
+    'backend',
+    'security',
+    'infrastructure and deployment',
+    'architecture and design',
+    'general best practices',
+  ]
+  const { host, runs } = fakeHost({ claude: () => questionsJson(['When would you use a queue?']) })
+  await host.global.set('answered', [...topics.map(topic => ({ prompt: `about ${topic}`, topic })), 'an old one'])
+  // Enough codebase questions that the next top-up is a concept one
+  await host.project.set('queue', [1, 2, 3, 4, 5].map(n => question(`code ${n}`)))
+  await new Quiz(host).generate()
+
+  const topic = ((await host.global.get('concepts')) as Question[])[0]!.topic!
+  const prompt = runs.find(r => r.argv[1] === '-p')!.argv[2]!
+  const others = [...topics.filter(t => t !== topic).map(t => `about ${t}`), 'an old one']
+  expect(prompt).toContain(`On this topic:\n- about ${topic}\n\nOn other topics:\n${others.map(p => `- ${p}`).join('\n')}`)
 })
 
 test('skill: three right in a row moves the difficulty up; a wrong answer or no idea steps down', () => {
@@ -107,12 +157,13 @@ test('with nothing generated, a seed question is shown', async () => {
   await onlyRounds(host.global as MemoryStore, 'codebase')
   const quiz = new Quiz(host)
   await quiz.onPrompt()
-  expect(shown(quiz).id).toMatch(/^seed-/)
+  const seed = shown(quiz)
+  expect(seed.id).toMatch(/^seed-/)
   // Seeds are general, so knowing one is remembered globally
   await quiz.act({ type: 'choose', index: NO_IDEA })
   expect(quiz.state.skill.difficulty).toBe(1)
   await quiz.act({ type: 'skip' })
-  expect(((await host.global.get('answered')) as string[]).length).toBe(1)
+  expect(((await host.global.get('answered')) as { prompt: string }[]).map(a => a.prompt)).toEqual([seed.prompt])
 })
 
 test('once Claude finishes, the round you are on carries on, and the next one says Claude is ready', async () => {

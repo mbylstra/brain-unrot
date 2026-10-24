@@ -443,7 +443,7 @@ Search the web for techniques, workflows and tool features on this topic publish
 
 Find up to 3 items. For each: url (the page itself), publishedAt (the date the page was published, YYYY-MM-DD) and quote (one short sentence copied exactly from the page). ${WRITING} Reply with an empty list if nothing new turns up.
 
-${aimAt(level)}${avoid.length === 0 ? '' : `\n\nThe developer already has these tips:\n${avoid.map(h => `- ${h}`).join('\n')}`}`
+${aimAt(level)}${avoid.length === 0 ? '' : `\n\nThe developer already knows these tips. Don't return one that makes the same point, even from another source.\n${avoid.map(h => `- ${h}`).join('\n')}`}`
 
 // Weighted by your reactions, and never the same topic twice in a row
 function pickTopic(p: Prefs, last?: Topic): Topic {
@@ -460,7 +460,9 @@ function pickTopic(p: Prefs, last?: Topic): Topic {
 async function research(host: Host, now: number): Promise<Tidbit[]> {
   const prefs = await loadPrefs(host)
   const topic = pickTopic(prefs, (await loadCursor(host)).lastTopic)
-  const avoid = (await loadTidbits(host)).map(t => t.headline)
+  // Tidbits aren't answered, so any shown, waiting or seeded counts as known
+  const headlines = [...(await loadTidbits(host)), ...(await loadHistory(host)), ...SEED_TIDBITS].map(t => t.headline)
+  const avoid = [...new Map(headlines.map(h => [said(h), h])).values()]
   host.log(`research ${topic}: asking claude`)
   const { data, cost } = await askClaude(host, RESEARCH_PROMPT(topic, day(now), day(now - WINDOW), prefs.level, avoid), {
     model: TIDBIT_MODEL,
