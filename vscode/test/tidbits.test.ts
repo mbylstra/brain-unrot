@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest'
 
 import { SEED_TIDBITS } from '../src/core/seeds'
-import { refresh } from '../src/core/tidbits'
+import { addTidbits, refresh } from '../src/core/tidbits'
+import type { Tidbit } from '../src/core/types'
 import { fakeHost } from './fake-host'
 
 test('tidbit research is told about every tip shown, waiting or seeded', async () => {
@@ -20,4 +21,23 @@ test('tidbit research is told about every tip shown, waiting or seeded', async (
   expect(prompt).toContain('- A tip waiting in the queue\n')
   expect(prompt.match(/already shown/gi)).toHaveLength(1)
   for (const seed of SEED_TIDBITS) expect(prompt).toContain(`- ${seed.headline}`)
+})
+
+test('tidbits from the same page are kept, but not the same line twice', async () => {
+  const { host } = fakeHost()
+  const tidbit = (headline: string, quote: string, lane: Tidbit['lane'] = 'research'): Tidbit => ({
+    id: headline,
+    headline,
+    body: '',
+    url: 'https://code.claude.com/docs/en/changelog',
+    quote,
+    topic: 'prompting',
+    lane,
+    isVerified: true,
+  })
+  const first = await addTidbits(host, [tidbit('One', 'Added `/one`'), tidbit('Two', 'Added `/two`')])
+  expect(first.map(t => t.headline)).toEqual(['One', 'Two'])
+  // The same line, quoted as rendered on the page rather than from the markdown
+  const again = await addTidbits(host, [tidbit('One, reworded', 'Added /one'), tidbit('Three', 'Added `/three`', 'changelog')])
+  expect(again.map(t => t.headline)).toEqual(['Three'])
 })

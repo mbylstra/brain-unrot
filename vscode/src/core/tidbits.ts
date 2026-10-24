@@ -139,10 +139,11 @@ function withHistory(host: Host, fn: (history: ShownTidbit[]) => ShownTidbit[]):
   return run
 }
 
-// A tidbit is known by its headline, and by its page (or its CHANGELOG line, since
-// every changelog tidbit shares the one page)
+// A tidbit is known by its headline and by the line it quotes, not by its page: one page (the
+// changelog, say) can hold many tips. The quote is keyed as plain words, so a release-note line
+// matches the same line on the rendered docs page, and as it was before, to match older keys
 const keysOf = (t: Tidbit) =>
-  t.lane === 'seed' ? [t.id] : [hash(`h:${said(t.headline)}`), hash(t.lane === 'changelog' ? `q:${said(t.quote)}` : `u:${t.url}`)]
+  t.lane === 'seed' ? [t.id] : [...new Set([hash(`h:${said(t.headline)}`), hash(`q:${said(t.quote)}`), hash(`q:${plain(t.quote)}`)])]
 
 export async function addTidbits(host: Host, found: Tidbit[]): Promise<Tidbit[]> {
   return withTidbits(host, async (tidbits, known) => {
