@@ -313,10 +313,32 @@ test('saying yes to more about a file puts its questions first', async () => {
   await quiz.newRound()
   expect(shown(quiz).prompt).toBe('about a')
 
-  await quiz.act({ type: 'skip' })
+  await quiz.act({ type: 'choose', index: shown(quiz).answer })
+  await quiz.act({ type: 'next' })
   expect(quiz.state.round).toMatchObject({ kind: 'question', isOffering: true })
   await quiz.act({ type: 'moreAboutFile', isYes: true })
   expect(shown(quiz).prompt).toBe('more about a')
+})
+
+test('the offer of more about a file comes before "Claude is ready", and not after a skip', async () => {
+  const { host } = fakeHost()
+  await host.global.set('quiz:weights', { codebase: 1, concept: 0, instructions: 0, plans: 0, tidbit: 0 })
+  await host.global.set('quiz:prefs', { offerChance: 1, preferenceChance: 0 })
+  await host.project.set('queue', [question('first'), question('second'), question('third')])
+  const quiz = new Quiz(host)
+  await quiz.onPrompt()
+  await quiz.onStop()
+
+  await quiz.act({ type: 'choose', index: shown(quiz).answer })
+  await quiz.act({ type: 'next' })
+  expect(quiz.state.round).toMatchObject({ isOffering: true })
+  expect(quiz.state.isClaudeReady).toBe(false)
+  await quiz.act({ type: 'moreAboutFile', isYes: false })
+  expect(quiz.state.isClaudeReady).toBe(true)
+
+  await quiz.act({ type: 'keepGoing' })
+  await quiz.act({ type: 'skip' })
+  expect(quiz.state.round).not.toMatchObject({ isOffering: true })
 })
 
 test('the weights are always in the view, and resetting them goes back to the defaults', async () => {

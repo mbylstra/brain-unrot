@@ -60,7 +60,7 @@ const DIFFICULTY_MIN = 1
 export const DIFFICULTY_MAX = 5
 // Right answers in a row that move the difficulty up one
 const STREAK_UP = 3
-// How often moving on from a question about a file asks whether you'd like more about it.
+// How often moving on from an answered question about a file asks whether you'd like more about it.
 // Saying yes generates more when fewer than this many are ready at your difficulty
 const OFFER_CHANCE = 0.5
 const MORE_ABOUT_FILE_LOW = 2
@@ -834,10 +834,10 @@ export class Quiz {
   }
 
   // Moving on sometimes asks something first: whether you'd like more questions about the file
-  // the question was about, or else which kind of round you'd like more of.
-  // `question` is absent when moving on from a tidbit
+  // the question was about, or else which kind of round you'd like more of. It asks even once
+  // Claude has finished, before saying so.
+  // `question` is absent when moving on from a tidbit or a skipped question
   private async moveOn(question?: Question) {
-    if (this.isClaudeFinished) return this.endRound()
     const { offerChance, preferenceChance } = await this.loadQuizPrefs()
     if (question?.sourceFile && random(1000) < offerChance * 1000) {
       this.debug(`offer: more about ${question.sourceFile}`)
@@ -849,7 +849,7 @@ export class Quiz {
       await this.update({ isAskingPreference: true })
       return
     }
-    await this.newRound()
+    await this.endRound()
   }
 
   // --- Events from Claude ---
@@ -949,7 +949,7 @@ export class Quiz {
       case 'skip':
         this.debug(`skip: ${question.id}`)
         await this.remember(question)
-        return this.moveOn(question)
+        return this.moveOn()
       case 'moreAboutFile': {
         const file = question.sourceFile
         if (!current.isOffering || !file) return
