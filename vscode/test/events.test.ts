@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 
-import { EventWatcher, Tail, isInside, parseBridgeLine, parseTranscriptLine } from '../src/events'
+import { EventWatcher, Tail, isInside, normalizePath, parseBridgeLine, parseTranscriptLine } from '../src/events'
 import { JsonStore, projectStore } from '../src/store'
 
 let dir: string
@@ -81,6 +81,17 @@ test('isInside', () => {
   expect(isInside('/repo', '/repo')).toBe(true)
   expect(isInside('/repo', '/repo/src/a.ts')).toBe(true)
   expect(isInside('/repo', '/repository/a.ts')).toBe(false)
+})
+
+test('Windows paths: forward slashes and an upper-case drive, compared ignoring case', () => {
+  expect(normalizePath('c:\\Users\\me\\repo')).toBe('C:/Users/me/repo')
+  expect(normalizePath('/repo/a.ts')).toBe('/repo/a.ts')
+  expect(isInside('C:/Users/me/repo', 'c:\\users\\me\\repo\\src\\a.ts')).toBe(true)
+  expect(isInside('C:/Users/me/repo', 'C:\\Users\\me\\repository')).toBe(false)
+  expect(isInside('/Repo', '/repo/a.ts')).toBe(false)
+  expect(parseBridgeLine(JSON.stringify({ event: 'read', cwd: 'C:\\repo', file: 'C:\\repo\\a.ts' }))).toMatchObject({ cwd: 'C:/repo', file: 'C:/repo/a.ts' })
+  const read = { type: 'assistant', cwd: 'c:\\repo', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'c:\\repo\\a.ts' } }] } }
+  expect(parseTranscriptLine(JSON.stringify(read))).toMatchObject([{ event: 'read', cwd: 'C:/repo', file: 'C:/repo/a.ts' }])
 })
 
 test('watcher: a transcript idle since the window opened still gives the prompt that wakes it', { timeout: 10_000 }, async () => {

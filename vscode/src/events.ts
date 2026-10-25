@@ -23,9 +23,9 @@ export function parseBridgeLine(line: string): ClaudeEvent | undefined {
     if (raw.event === 'read' && (typeof raw.file !== 'string' || raw.file === '')) return undefined
     return {
       event: raw.event,
-      cwd: raw.cwd,
+      cwd: normalizePath(raw.cwd),
       sessionId: typeof raw.session_id === 'string' ? raw.session_id : undefined,
-      file: raw.event === 'read' ? raw.file : undefined,
+      file: raw.event === 'read' ? normalizePath(raw.file) : undefined,
       source: 'bridge',
     }
   } catch {
@@ -47,7 +47,7 @@ export function parseTranscriptLine(line: string): ClaudeEvent[] | undefined {
   }
   if (typeof raw?.type !== 'string') return undefined
   if (raw.isSidechain || raw.isMeta || raw.isCompactSummary) return []
-  const cwd = typeof raw.cwd === 'string' ? raw.cwd : undefined
+  const cwd = typeof raw.cwd === 'string' ? normalizePath(raw.cwd) : undefined
   const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : undefined
   const time = typeof raw.timestamp === 'string' ? Date.parse(raw.timestamp) : NaN
   const at = (event: ClaudeEvent['event'], file?: string): ClaudeEvent => ({
@@ -75,7 +75,7 @@ export function parseTranscriptLine(line: string): ClaudeEvent[] | undefined {
     return isPrompt ? [at('prompt')] : []
   }
   if (!Array.isArray(content)) return []
-  return content.filter(c => c?.type === 'tool_use' && c.name === 'Read' && typeof c.input?.file_path === 'string').map(c => at('read', c.input.file_path))
+  return content.filter(c => c?.type === 'tool_use' && c.name === 'Read' && typeof c.input?.file_path === 'string').map(c => at('read', normalizePath(c.input.file_path)))
 }
 
 // Reads the lines appended to a file since the last call. A file that shrank (another window
@@ -225,5 +225,13 @@ export class EventWatcher {
   }
 }
 
-// Whether a path is the folder or inside it
-export const isInside = (folder: string, path: string) => path === folder || path.startsWith(folder.endsWith('/') ? folder : folder + '/')
+// The core joins paths with '/', so Windows paths get forward slashes and an upper-case drive
+// letter (VS Code says `c:\…`, Claude Code `C:\…`). Node takes either kind of slash
+export const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/^[a-z]:/, drive => drive.toUpperCase())
+
+// Whether a path is the folder or inside it. Windows paths are compared ignoring case, as Windows does
+export function isInside(folder: string, path: string) {
+  const fold = (p: string) => (/^[A-Za-z]:/.test(p) ? normalizePath(p).toLowerCase() : p)
+  const [f, p] = [fold(folder), fold(path)]
+  return p === f || p.startsWith(f.endsWith('/') ? f : f + '/')
+}
