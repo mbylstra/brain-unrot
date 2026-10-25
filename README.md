@@ -11,11 +11,16 @@ code that are changing instead of approving work you don't understand.
 It works with Claude Code in the integrated terminal and with Claude's VS
 Code extension.
 
+![The Brain Unrot panel beside Claude Code in VS Code, showing a question with five choices](docs/screenshot.png)
+
 > **Alpha.** This is early, and it has never been tested on anything other
 > than my own machine. Expect rough edges, and things to change.
 
 Brain Unrot started as a Claude Code plugin that drew the quiz in a
-terminal pane. That version is kept at the `cli-plugin` tag.
+terminal pane. That version is kept at the `cli-plugin` tag. Now the VS Code
+extension is the whole app: it holds the quiz, writes the questions and
+draws the panel. The only Claude Code part left is the optional bridge
+plugin, which tells the extension what Claude is doing.
 
 ## Install
 
@@ -70,6 +75,12 @@ file asks whether you'd like more questions about it. Yes puts that file's
 questions first, and Claude writes more if only a few are ready. No sends
 its questions to the back of the queue.
 
+**More of what you like.** Now and then, moving on asks which kind of
+round you'd like more of: questions about the code, general programming,
+the project's instructions for Claude, its plans, or tidbits. Each kind
+comes up in proportion to its weight, and your pick adds 1 to it. The
+weights are in the panel's footer, with a button to reset them.
+
 **Difficulty** goes from 1 to 5 and starts at 1. Three right in a row moves
 it up one; a wrong answer moves it down half a step, and "no idea" moves it
 down one. Questions answered right or skipped aren't asked again. Ones
@@ -97,12 +108,17 @@ quiz:
 - When the project has instruction files for coding agents (`CLAUDE.md`,
   `AGENTS.md`, skills), Haiku writes questions about what they tell the
   agent to do.
+- When the project has plans (`.md` files under `plans/` or `docs/plans/`)
+  and fewer than 3 plan questions are ready, Haiku writes questions about
+  them. Plans matter more than the code in general, so more are kept ready.
 - When fewer than 2 general programming questions are ready, Sonnet writes
   3, about concepts, trade-offs and best practices, leaning towards the
   languages and frameworks your repo uses.
 
 The question-writing Claude can only read files (`Read`, `Grep`, `Glob`)
-and run `git log`, `git show` and `git blame`. These calls use your Claude
+and run `git log`, `git show` and `git blame`. The Claude that answers your
+clarifying questions and files issues can also edit files in your repo, for
+example to update a plan you ask it about. These calls use your Claude
 account like any other, so they count towards your usage.
 
 If VS Code can't find `claude` (it may lack your shell's `PATH` when opened
@@ -128,7 +144,7 @@ vscode/
   src/core/          the quiz: state, prompts, generation, tidbits, seeds
   src/events.ts      the bridge and transcript watchers
   src/panel.ts       the webview panel
-  webview/           the panel's UI
+  webview/           the panel's UI: React, shadcn/ui and Tailwind
   bridge/            the brain-unrot-bridge Claude Code plugin
   test/              tests
 docs/
@@ -136,7 +152,8 @@ docs/
   issues/            issues filed from the quiz (todo/ and done/)
 ```
 
-Run the tests with `pnpm test` in `vscode/`. More is in
+In `vscode/`, `pnpm build` builds the extension and the panel with Vite, and
+`pnpm test` runs the tests. More is in
 [CLAUDE.md](CLAUDE.md) and [vscode/README.md](vscode/README.md).
 
 The design of the extension is in
