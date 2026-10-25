@@ -1,26 +1,26 @@
 # Brain Unrot
 
-A VS Code extension that gives you something useful to do while Claude
-works: a quiz about the codebase you're working in.
+Waiting on Claude is when your attention drifts to YouTube or social media,
+and it's hard to remember to go back. This VS Code extension keeps you in your project
+instead: each time you send a prompt, it opens a quick quiz beside the
+editor, with:
 
-Every time you send Claude a prompt, a panel opens beside the editor with
-a multiple-choice question about your repo. Questions are written by Claude
-from the files it's reading for your task, so you learn the parts of the
-code that are changing instead of approving work you don't understand.
-
-It works with Claude Code in the integrated terminal and with Claude's VS
-Code extension.
+- Questions about your code, your plans, and what you tell Claude in
+  `CLAUDE.md`, `AGENTS.md` and skills
+- General programming questions
+- "Did you know?" tips on coding with LLMs
 
 ![The Brain Unrot panel beside Claude Code in VS Code, showing a question with five choices](docs/screenshot.png)
 
+Brain Unrot is a VS Code extension that works alongside Claude Code. When
+you send Claude a prompt, it opens its panel beside the editor. In the
+background it runs Claude to write questions,
+mostly from the files Claude is reading for your task, so you learn the
+parts of your project that are changing. When Claude finishes, the panel
+tells you, so you can switch back.
+
 > **Alpha.** This is early, and it has never been tested on anything other
 > than my own machine. Expect rough edges, and things to change.
-
-Brain Unrot started as a Claude Code plugin that drew the quiz in a
-terminal pane. That version is kept at the `cli-plugin` tag. Now the VS Code
-extension is the whole app: it holds the quiz, writes the questions and
-draws the panel. The only Claude Code part left is the optional bridge
-plugin, which tells the extension what Claude is doing.
 
 ## Install
 
@@ -46,22 +46,19 @@ claude plugin marketplace add mbylstra/brain-unrot
 claude plugin install brain-unrot-bridge@brain-unrot
 ```
 
-If you used the old CLI plugin, uninstall it (`/plugin`), or you'll get two
-quizzes.
-
 ## Using it
 
 The panel never takes the keyboard while you're typing to Claude. Click it
 to answer, or use the keys:
 
-| Key | What it does |
-| --- | --- |
-| 1–4 | Answer |
-| 5 | "Absolutely no idea": shows the answer |
-| 6 | Ask a clarifying question. Claude discusses it without giving the answer away |
-| 7 | Suggest an improvement or file a bug |
-| n | Next question |
-| s | Skip this question. It isn't asked again |
+| Key | What it does                                                                  |
+| --- | ----------------------------------------------------------------------------- |
+| 1–4 | Answer                                                                        |
+| 5   | "Absolutely no idea": shows the answer                                        |
+| 6   | Ask a clarifying question. Claude discusses it without giving the answer away |
+| 7   | Suggest an improvement or file a bug                                          |
+| n   | Next question                                                                 |
+| s   | Skip this question. It isn't asked again                                      |
 
 After you answer, the panel shows the right answer, an explanation and the
 file the question came from.
