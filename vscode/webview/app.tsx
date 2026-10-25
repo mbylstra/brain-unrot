@@ -496,7 +496,9 @@ export function App({ view }: { view: View }) {
   const drafts = useDrafts(roundId)
   return (
     <DraftsContext.Provider value={drafts}>
-      <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
+      {/* Focusable, so clicking or selecting text focuses this and not <body>. Before a copy, VS Code
+          refocuses the last focused element when <body> has the focus: a text box, which drops the selection */}
+      <div tabIndex={-1} className="mx-auto flex max-w-3xl flex-col gap-4 p-4 outline-none">
         {view.isClaudeFinished && !view.isClaudeReady ? (
           <Alert variant="success">
             <CircleCheck />
