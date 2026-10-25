@@ -4,12 +4,15 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node", "vscode"],
+    "types": ["node", "vscode", "vite/client"],
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": { "@/*": ["./webview/*"] },
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
     "isolatedModules": true
   },
-  "include": ["src", "webview", "test"]
+  "include": ["src", "webview", "test", "*.config.mts"]
 }

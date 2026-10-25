@@ -23,8 +23,8 @@ Build and install the extension (there's no Marketplace release yet):
 
 ```sh
 cd vscode
-npm install
-npm run package
+pnpm install
+pnpm package
 code --install-extension brain-unrot-0.1.0.vsix
 ```
 
@@ -136,7 +136,7 @@ docs/
   issues/            issues filed from the quiz (todo/ and done/)
 ```
 
-Run the tests with `npm test` in `vscode/`. More is in
+Run the tests with `pnpm test` in `vscode/`. More is in
 [CLAUDE.md](CLAUDE.md) and [vscode/README.md](vscode/README.md).
 
 The design of the extension is in

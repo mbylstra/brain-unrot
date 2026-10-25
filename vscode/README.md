@@ -8,14 +8,14 @@ The extension is the whole app. It holds the state, writes the questions, and ru
 
 ```sh
 cd vscode
-npm install
-npm run build
+pnpm install
+pnpm build
 ```
 
 Then open `vscode/` in VS Code and press F5 (Extension Development Host). To install it for real:
 
 ```sh
-npm run build && npm run package
+pnpm package
 code --install-extension brain-unrot-0.1.0.vsix
 ```
 
@@ -49,6 +49,6 @@ Logs are in the **Brain Unrot** output channel. The last 200 lines are also writ
 - `src/core/`: the quiz logic (`quiz.ts` holds the state, prompts and generation)
 - `src/host.ts`: the `Host` interface the core uses in place of the plugin's `$`. `src/node-host.ts` and `src/store.ts` are its VS Code versions
 - `src/events.ts`: the bridge and transcript watchers
-- `src/panel.ts` and `webview/`: the panel. The webview only draws snapshots and sends actions back
+- `src/panel.ts` and `webview/`: the panel. The webview only draws snapshots and sends actions back (React, shadcn/ui and Tailwind, built with Vite)
 - `bridge/`: the Claude Code plugin that forwards events
-- `test/`: `npm test` (vitest, plain Node, with a fake `Host`)
+- `test/`: `pnpm test` (vitest, plain Node, with a fake `Host`)

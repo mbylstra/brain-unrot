@@ -8,16 +8,16 @@ It used to be a Claude Code plugin that drew the quiz in a terminal pane. That v
 
 Run these in `vscode/`:
 
-- Install the dependencies: `npm install`
-- Run the tests: `npm test` (vitest, plain Node, no VS Code needed). One file: `npx vitest run test/quiz.test.ts`, or one test: `-t '<name>'`
-- Type-check: `npm run typecheck`
-- Build: `npm run build` (esbuild, to `dist/`)
+- Install the dependencies: `pnpm install` (pnpm 10, pinned in `packageManager`)
+- Run the tests: `pnpm test` (vitest, plain Node, no VS Code needed). One file: `pnpm vitest run test/quiz.test.ts`, or one test: `-t '<name>'`
+- Type-check: `pnpm typecheck`
+- Build: `pnpm build` (Vite, to `dist/`: `vite.extension.config.mts` and `vite.webview.config.mts`)
 - Validate the bridge: `claude plugin validate vscode/bridge`, from the repo root
 
 To try a change for real, package it and reinstall it, then run **Developer: Reload Window** in VS Code (you can't do that part; ask the user):
 
 ```sh
-npm run package && code --install-extension brain-unrot-0.1.0.vsix --force
+pnpm package && code --install-extension brain-unrot-0.1.0.vsix --force
 ```
 
 The user's marketplace is this clone, so the bridge runs whatever branch is checked out here, and `/reload-plugins` picks up edits to it.
@@ -28,7 +28,7 @@ The user's marketplace is this clone, so the bridge runs whatever branch is chec
 - `src/core/` is the quiz logic. `quiz.ts` holds the state, the actions the panel sends, the prompts and generation. `tidbits.ts` does tidbit research, `claude.ts` has `askClaude`, `seeds.ts` the warm-up questions and tidbits.
 - `src/host.ts` is the `Host` interface the core uses for storage, files, processes, the clock, HTTP and logging. `src/node-host.ts` and `src/store.ts` implement it; tests use `test/fake-host.ts`. Keep `src/core/` free of `vscode` imports.
 - `src/events.ts` watches for what Claude does: a prompt (starts a round and opens the panel), a `Read` (queues the file for questions) and the end of a turn ("Claude is ready"). It reads the bridge's `~/.brain-unrot/events.jsonl`, and otherwise follows Claude Code's session transcripts in `~/.claude/projects/*/*.jsonl`. That format is internal and undocumented, so parse it defensively. A window only acts on events whose `cwd` is inside one of its workspace folders.
-- `src/panel.ts` and `webview/` are the panel. The webview only draws: the extension posts a full snapshot (`Quiz.view()`) on every change, and the webview posts actions back. The webview talks only through messages, so it could be served elsewhere later. Opening the panel must never take the keyboard focus (`preserveFocus`).
+- `src/panel.ts` and `webview/` are the panel. The webview only draws: the extension posts a full snapshot (`Quiz.view()`) on every change, and the webview posts actions back. The webview talks only through messages, so it could be served elsewhere later. Opening the panel must never take the keyboard focus (`preserveFocus`). It's React with [shadcn/ui](https://ui.shadcn.com) components (`webview/components/ui/`, added with `pnpm dlx shadcn@latest add <name>`) and Tailwind v4. It uses shadcn's stock neutral theme (`webview/style.css`), switching to its dark theme when VS Code's is dark, and drops VS Code's default webview styles (`#_defaultStyles`). Use the theme's tokens (`bg-primary`, `text-muted-foreground`, plus `text-success` and `text-warning`), not fixed colours or VS Code's `--vscode-*` variables. Buttons with a `data-hotkey` are pressed by that key, and Enter presses the one with `data-primary`. The bundle is one file with the CSS inlined.
 - `bridge/` is a Claude Code plugin of plain command hooks (`forward.sh`). It must print nothing, never block, always exit 0, and do nothing when `BRAIN_UNROT_CHILD` is set.
 
 All model work goes through `askClaude`, which spawns `claude -p` with `--permission-mode dontAsk`, user settings only, hooks disabled and a strict MCP config. It sets `BRAIN_UNROT_CHILD` (`DISABLE_PLUGIN_ENV_VAR`) so the bridge stays quiet in that process. Each kind of job has its own tool and permission set (`CODE`, `CONCEPT`, `INSTRUCTIONS`, `PLANS`, `EDIT` in `quiz.ts`). Keep these minimal, because they decide what the background Claude can do in the user's repo. The `claude` path comes from the `brainUnrot.claudePath` setting, or else a login shell and the usual install locations.
