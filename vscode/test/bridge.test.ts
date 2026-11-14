@@ -14,9 +14,13 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+// On Windows, Claude Code runs hooks with Git for Windows' shell and tools
+const GIT_BIN = 'C:\\Program Files\\Git\\usr\\bin'
+const [SH, BARE_PATH] = process.platform === 'win32' ? [join(GIT_BIN, 'sh.exe'), GIT_BIN] : ['/bin/sh', '/usr/bin:/bin']
+
 const forward = (event: string, input: string, env: Record<string, string> = {}) =>
   // A bare environment, as a hook might get: the system's own grep and sed, no shell functions
-  execFileSync('/bin/sh', [SCRIPT, event], { input, env: { PATH: '/usr/bin:/bin', HOME: dir, BRAIN_UNROT_DIR: dir, ...env }, encoding: 'utf8' })
+  execFileSync(SH, [SCRIPT, event], { input, env: { PATH: BARE_PATH, HOME: dir, BRAIN_UNROT_DIR: dir, ...env }, encoding: 'utf8' })
 
 const lines = () => {
   try {
@@ -53,6 +57,11 @@ test("a Read is forwarded with the file from tool_input, not one in the file's c
   )
   forward('read', input)
   expect(parseBridgeLine(lines()[0]!)).toMatchObject({ event: 'read', file: '/Users/me/proj/src/a b.ts' })
+})
+
+test('Windows paths keep their backslashes escaped', () => {
+  forward('read', JSON.stringify({ session_id: 's', cwd: 'C:\\Users\\me\\proj', tool_input: { file_path: 'C:\\Users\\me\\proj\\a.ts' } }))
+  expect(parseBridgeLine(lines()[0]!)).toMatchObject({ cwd: 'C:/Users/me/proj', file: 'C:/Users/me/proj/a.ts' })
 })
 
 test('a Read without a file, and anything in a child claude, writes nothing', () => {

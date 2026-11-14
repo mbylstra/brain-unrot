@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import * as vscode from 'vscode'
 
 import { CHAT_TICK_MS, Quiz, TICK_MS } from './core/quiz'
-import { type ClaudeEvent, EventWatcher, isInside } from './events'
+import { type ClaudeEvent, EventWatcher, isInside, normalizePath } from './events'
 import { createHost, findClaude } from './node-host'
 import { Panel } from './panel'
 import { JsonStore } from './store'
@@ -93,7 +93,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (activeRoot === root) activeRoot = undefined
   }
 
-  for (const folder of vscode.workspace.workspaceFolders ?? []) addFolder(folder.uri.fsPath)
+  for (const folder of vscode.workspace.workspaceFolders ?? []) addFolder(normalizePath(folder.uri.fsPath))
 
   // Tidbits are general, so one research timer is enough, whichever project it runs from. It waits
   // until some project here has been used
@@ -123,8 +123,9 @@ export async function activate(context: vscode.ExtensionContext) {
     wake(root)
     if (e.event === 'read') {
       hasHeardReads = true
-      // Only files in the project: the background Claude can't read the rest
-      if (e.file && isInside(root, e.file)) quiz.onRead(e.file)
+      // Only files in the project: the background Claude can't read the rest. On Windows the case
+      // can differ, so the file gets the root as the folder spells it
+      if (e.file && isInside(root, e.file)) quiz.onRead(root + e.file.slice(root.length))
       return
     }
     activeRoot = root
@@ -162,13 +163,14 @@ export async function activate(context: vscode.ExtensionContext) {
       redraw()
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(e => {
-      e.added.forEach(f => addFolder(f.uri.fsPath))
-      e.removed.forEach(f => removeFolder(f.uri.fsPath))
+      e.added.forEach(f => addFolder(normalizePath(f.uri.fsPath)))
+      e.removed.forEach(f => removeFolder(normalizePath(f.uri.fsPath)))
     }),
     vscode.workspace.onDidSaveTextDocument(doc => {
       if (hasHeardReads || doc.uri.scheme !== 'file') return
-      const root = folderOf(doc.uri.fsPath)
-      if (root && !doc.uri.fsPath.includes('/.brain-unrot/')) quizzes.get(root)!.quiz.onRead(doc.uri.fsPath)
+      const file = normalizePath(doc.uri.fsPath)
+      const root = folderOf(file)
+      if (root && !file.includes('/.brain-unrot/')) quizzes.get(root)!.quiz.onRead(file)
     }),
   )
 }

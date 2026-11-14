@@ -30,7 +30,8 @@ export interface Host {
     realPath(path: string): Promise<string>
     write(path: string, text: string): Promise<void>
   }
-  // `argv[0]` of 'claude' runs the resolved claude CLI. The child gets no stdin
+  // `argv[0]` of 'claude' runs the resolved claude CLI. The child gets no stdin, except that the
+  // prompt of `claude -p <prompt>` is sent on it
   run(argv: string[], options?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<RunResult>
   now(): number
   fetch(url: string, init?: { headers?: Record<string, string> }): Promise<FetchResult>

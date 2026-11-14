@@ -18,8 +18,17 @@ const INSTALL_PATHS = ['.local/bin/claude', '.claude/local/claude'].map(p => joi
 // Printed before the answer, so whatever the profile scripts print doesn't get mistaken for it
 const MARKER = '__BRAIN_UNROT__'
 
+// Windows has no login shell to ask, and VS Code there already has the user's PATH
+const WINDOWS_INSTALL_PATH = join(homedir(), '.local', 'bin', 'claude.exe')
+
 export function findClaude(configured: string, log: (line: string) => void): Promise<Claude> {
   if (configured) return Promise.resolve({ path: configured, env: {} })
+  if (process.platform === 'win32') {
+    found ??= access(WINDOWS_INSTALL_PATH).then(
+      () => (log(`claude: ${WINDOWS_INSTALL_PATH}`), { path: WINDOWS_INSTALL_PATH, env: {} }),
+      () => (log(`claude not at ${WINDOWS_INSTALL_PATH}; trying plain "claude". Set brainUnrot.claudePath`), { path: 'claude', env: {} }),
+    )
+  }
   found ??= new Promise(resolve => {
     const shell = process.env.SHELL || '/bin/sh'
     execFile(shell, ['-lc', `printf '%s\\n' ${MARKER}; command -v claude; printf '%s\\n' "$PATH"`], { timeout: 10_000 }, async (err, stdout) => {
@@ -42,11 +51,12 @@ export function findClaude(configured: string, log: (line: string) => void): Pro
   return found
 }
 
-export function run(argv: string[], options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {}): Promise<RunResult> {
+export function run(argv: string[], options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; input?: string } = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const [command, ...args] = argv
-    // No stdin: `claude -p` can wait on an open pipe
-    const child = spawn(command!, args, { cwd: options.cwd, env: { ...process.env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Stdin is the input, if any, and then closed: `claude -p` can wait on an open pipe
+    const child = spawn(command!, args, { cwd: options.cwd, env: { ...process.env, ...options.env }, stdio: ['pipe', 'pipe', 'pipe'] })
+    child.stdin.end(options.input)
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', chunk => (stdout += chunk))
@@ -96,7 +106,10 @@ export function createHost(root: string, deps: { global: Store; globalDir: strin
       const claude = await deps.claude()
       // The background work runs from ~/.brain-unrot unless it's about the project
       await mkdir(deps.globalDir, { recursive: true })
-      return run([claude.path, ...argv.slice(1)], { cwd: deps.globalDir, ...options, env: { ...claude.env, ...options.env } })
+      const env = { ...claude.env, ...options.env }
+      // A prompt goes in on stdin: as an argument, a long one is over Windows' 32K command line limit
+      if (argv[1] === '-p' && argv[2] !== undefined) return run([claude.path, '-p', ...argv.slice(3)], { cwd: deps.globalDir, ...options, env, input: argv[2] })
+      return run([claude.path, ...argv.slice(1)], { cwd: deps.globalDir, ...options, env })
     },
     now: () => Date.now(),
     fetch: async (url, init) => {
