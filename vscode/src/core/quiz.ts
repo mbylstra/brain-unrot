@@ -6,7 +6,7 @@
 // and their answered list are kept globally (`host.global`), tagged with the project they were
 // written for; any project can use them
 import type { Host, Store } from '../host'
-import type { Category, CategoryWeights, ConceptTopic, Issue, Message, Question, QuizPrefs, Reaction, Round, Skill } from './types'
+import type { Category, CategoryWeights, ConceptTopic, Issue, Message, Question, PlanSelection, QuizPrefs, Reaction, Round, Skill } from './types'
 import { askClaude, random } from './claude'
 import { SEEDS } from './seeds'
 import { askAboutTidbit, installedVersion, nextTidbit, react, refresh, sourceLine, tidbitsReady } from './tidbits'
@@ -168,6 +168,7 @@ export type Action =
   | { type: 'react'; reaction: Reaction }
   | { type: 'prefer'; category?: Category }
   | { type: 'resetWeights' }
+  | { type: 'setPlanSelection'; selection: PlanSelection }
   | { type: 'setMode'; category: Category | null }
   | { type: 'moreAboutFile'; isYes: boolean }
 
@@ -518,6 +519,8 @@ const quizPrefsKey = 'quiz:prefs'
 const weightsKey = 'quiz:weights'
 const skillKey = 'skill'
 const modeKey = 'quiz:mode'
+const planSelectionKey = 'quiz:planSelection'
+const planSelections: PlanSelection[] = ['any', 'wip', 'todo', 'latest']
 
 // One write to the queues at a time, across every project in this window: the concept queue is shared
 let lock: Promise<unknown> = Promise.resolve()
@@ -681,6 +684,33 @@ export class Quiz {
     return CATEGORIES.find(([category]) => category === stored)?.[0] ?? null
   }
 
+  private async loadPlanSelection(): Promise<PlanSelection> {
+    const stored = await this.host.project.get(planSelectionKey)
+    return planSelections.find(selection => selection === stored) ?? 'any'
+  }
+
+  private async selectedPlanFiles(): Promise<string[] | undefined> {
+    if (await this.loadMode() !== 'plans') return undefined
+    const selection = await this.loadPlanSelection()
+    if (selection === 'any') return undefined
+    const files = (await this.findPlanFiles()).filter(file => {
+      const folders = file.toLowerCase().split('/').slice(0, -1)
+      const wip = folders.includes('wip')
+      const todo = folders.includes('todo') || folders.includes('to do')
+      return selection === 'wip' ? wip : selection === 'todo' ? todo : wip || todo
+    })
+    if (selection !== 'latest') return files
+    const dated = await Promise.all(files.map(async file => ({ file, at: await this.host.fs.modifiedAt(`${this.host.root}/${file}`).catch(() => -Infinity) })))
+    dated.sort((a, b) => b.at - a.at || a.file.localeCompare(b.file))
+    return dated.slice(0, 1).map(entry => entry.file)
+  }
+
+  private planMatches(question: Question, files: string[] | undefined): boolean {
+    if (categoryOf(question) !== 'plans' || files === undefined) return true
+    const sources = question.sourceFile ? [question.sourceFile] : question.planSources
+    return !!sources?.length && sources.every(file => files.includes(file))
+  }
+
   async loadWeights(): Promise<CategoryWeights> {
     const stored = (await this.host.global.get(weightsKey)) as Partial<CategoryWeights> | undefined
     return { codebase: 1, concept: 1, instructions: 1, plans: 1, tidbit: 1, ...stored }
@@ -769,9 +799,10 @@ export class Quiz {
     const known = new Set((await this.loadAnswered()).map(said))
     const isSeedLeft = (await this.seedsLeft(last)).length > 0
     const moreAboutFile = this.moreAboutFile
+    const selectedPlans = category === 'plans' ? await this.selectedPlanFiles() : undefined
     const taken = await this.withQueue(async all => {
       const queue = all.filter(q => !known.has(said(q.prompt)))
-      const canTake = (q: Question) => fits(q, s) && categoryOf(q) === category && (q.id !== last || !isSeedLeft)
+      const canTake = (q: Question) => fits(q, s) && this.planMatches(q, selectedPlans) && categoryOf(q) === category && (q.id !== last || !isSeedLeft)
       const aboutFile = moreAboutFile === undefined ? -1 : queue.findIndex(q => canTake(q) && q.id !== last && q.sourceFile === moreAboutFile)
       const i = aboutFile >= 0 ? aboutFile : queue.findIndex(canTake)
       return i < 0 ? [queue, undefined] : [queue.filter((_, j) => j !== i), queue[i]]
@@ -900,9 +931,15 @@ export class Quiz {
         return this.endRound()
       case 'cancelIssue':
         return this.updateRound(r => (r ? { ...r, issue: undefined } : r))
+      case 'setPlanSelection':
+        if (!planSelections.includes(action.selection)) return
+        await this.host.project.set(planSelectionKey, action.selection)
+        this.plansCheckedAt = -Infinity
+        return this.update({})
       case 'setMode':
         if (action.category !== null && !CATEGORIES.some(([category]) => category === action.category)) return
         await this.host.project.set(modeKey, action.category)
+        this.plansCheckedAt = -Infinity
         return this.update({ isAskingPreference: false })
       case 'resetWeights':
         await this.resetWeights()
@@ -986,6 +1023,7 @@ export class Quiz {
       root: this.host.root,
       difficultyMax: DIFFICULTY_MAX,
       mode: await this.loadMode(),
+      planSelection: await this.loadPlanSelection(),
       modes: CATEGORIES.map(([category]) => ({ category, name: CATEGORY_NAMES[category] })),
       issuesDir: ISSUES_DIR,
       isClaudeFinished: this.isClaudeFinished,
@@ -1150,8 +1188,10 @@ export class Quiz {
     const s = await this.loadSkill()
     // A file Claude read comes first; otherwise top up whichever kind has too few at or below
     // your difficulty, taking turns when several do. Instruction and plan questions need those files
-    const file = this.pending.shift()
-    const fitting = queue.filter(q => fits(q, s))
+    const selectedPlans = await this.selectedPlanFiles()
+    let file = this.pending.shift()
+    while (file && selectedPlans !== undefined && !selectedPlans.includes(file.startsWith(host.root + '/') ? file.slice(host.root.length + 1) : file)) file = this.pending.shift()
+    const fitting = queue.filter(q => fits(q, s) && this.planMatches(q, selectedPlans))
     const count = (category: Category) => fitting.filter(q => categoryOf(q) === category).length
     const root = host.root
     const now = host.now()
@@ -1165,6 +1205,7 @@ export class Quiz {
       this.planFiles = await this.findPlanFiles()
       this.debug(`plan files: ${this.planFiles.length > 0 ? `${this.planFiles.length} found` : '(none)'}`)
     }
+    if (selectedPlans !== undefined) this.planFiles = selectedPlans
     const isLow = {
       codebase: count('codebase') < QUEUE_LOW,
       concept: count('concept') < CONCEPTS_LOW,
@@ -1182,6 +1223,7 @@ export class Quiz {
           : isInstructionFile(shown) || this.instructionSources.has(shown)
             ? 'instructions'
             : 'codebase'
+    const planSources = kind === 'plans' ? (shown ? [shown] : samplePlanFiles(this.planFiles)) : []
     const difficulty = difficultyOf(s)
     // Concept questions avoid concept questions; the rest avoid this project's questions
     const scope: Scope = kind === 'concept' ? 'global' : 'project'
@@ -1210,7 +1252,7 @@ export class Quiz {
             : kind === 'plans'
               ? shown
                 ? PLAN_FILE_PROMPT(shown, difficulty, avoid)
-                : PLANS_PROMPT(samplePlanFiles(this.planFiles), difficulty, avoid)
+                : (planSources.length === 1 ? PLAN_FILE_PROMPT(planSources[0]!, difficulty, avoid) : PLANS_PROMPT(planSources, difficulty, avoid))
               : shown
                 ? FILE_PROMPT(shown, difficulty, avoid)
                 : REPO_PROMPT(difficulty, avoid)
@@ -1222,7 +1264,7 @@ export class Quiz {
         topic
           ? parsed.map((q, i): Question => ({ ...q, id: `concept:${topic}#${Date.now()}-${i}`, sourceFile: undefined, category: 'concept', topic, project: root }))
           : kind === 'instructions' || kind === 'plans'
-            ? parsed.map((q, i): Question => ({ ...q, id: `${kind}:${q.sourceFile ?? 'all'}#${Date.now()}-${i}`, category: kind }))
+            ? parsed.map((q, i): Question => ({ ...q, id: `${kind}:${q.sourceFile ?? 'all'}#${Date.now()}-${i}`, category: kind, ...(kind === 'plans' ? { planSources } : {}) }))
             : parsed
       ).filter(q => !known.has(said(q.prompt)))
       this.debug(`generate ${label}: ${questions.length} questions`)

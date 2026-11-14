@@ -7,6 +7,7 @@ export type Question = {
   answer: number
   explanation: string
   // Path of the file it was generated from; absent on seed questions
+  planSources?: string[]
   sourceFile?: string
   // The difficulty it was generated at; absent on seed questions (difficulty 1)
   difficulty?: number
@@ -22,6 +23,8 @@ export type Question = {
 
 // The kinds of round: questions about the project's files, general programming questions, questions
 // about the project's instructions for coding agents, questions about its plans, and tidbits
+export type PlanSelection = 'any' | 'wip' | 'todo' | 'latest'
+
 export type Category = 'codebase' | 'concept' | 'instructions' | 'plans' | 'tidbit'
 
 // How often each kind of round comes up, relative to the others; picking one in "Which would you like more of?" adds 1

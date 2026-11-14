@@ -26,6 +26,7 @@ export interface Host {
     exists(path: string): Promise<boolean>
     list(path: string): Promise<Entry[]>
     // The path with symlinks resolved
+    modifiedAt(path: string): Promise<number>
     realPath(path: string): Promise<string>
     write(path: string, text: string): Promise<void>
   }

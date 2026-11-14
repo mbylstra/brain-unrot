@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, readdir, realpath, mkdir, writeFile } from 'node:fs/promises'
+import { access, stat, readdir, realpath, mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -84,6 +84,7 @@ export function createHost(root: string, deps: { global: Store; globalDir: strin
         (await readdir(path, { withFileTypes: true })).map(
           (d): Entry => ({ name: d.name, kind: d.isFile() ? 'file' : d.isDirectory() || d.isSymbolicLink() ? 'directory' : 'other' }),
         ),
+      modifiedAt: async path => (await stat(path)).mtimeMs,
       realPath: path => realpath(path),
       write: async (path, text) => {
         await mkdir(dirname(path), { recursive: true })

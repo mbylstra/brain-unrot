@@ -5,7 +5,7 @@ import { Marked } from 'marked'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { View } from '../src/panel'
-import type { Category, Message, Question, Reaction, Tidbit } from '../src/core/types'
+import type { Category, PlanSelection, Message, Question, Reaction, Tidbit } from '../src/core/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -522,6 +522,22 @@ export function App({ view }: { view: View }) {
               <option value="">Weighted mix (unlocked)</option>
               {view.modes.map(mode => <option key={mode.category} value={mode.category}>{mode.name} only</option>)}
             </select>
+            {view.mode === 'plans' ? (
+              <>
+                <label htmlFor="plan-selection">Plans</label>
+                <select
+                  id="plan-selection"
+                  className="rounded-md border border-input bg-background px-2 py-1 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={view.planSelection}
+                  onChange={event => send({ type: 'setPlanSelection', selection: event.target.value as PlanSelection })}
+                >
+                  <option value="any">Any (all plans)</option>
+                  <option value="wip">WIP (wip folder)</option>
+                  <option value="todo">ToDo (todo or to do folder)</option>
+                  <option value="latest">Latest (most recently edited in WIP or ToDo)</option>
+                </select>
+              </>
+            ) : null}
             <span>Saved for this project · applies from the next round</span>
           </div>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

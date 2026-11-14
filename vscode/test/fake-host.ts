@@ -35,6 +35,7 @@ export function fakeHost(options: { root?: string; global?: MemoryStore; files?:
         }
         return [...names].map(([name, kind]) => ({ name, kind }))
       },
+      modifiedAt: async () => now,
       realPath: async path => path,
       write: async (path, text) => {
         files.set(path, text)

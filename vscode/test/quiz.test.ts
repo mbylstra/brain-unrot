@@ -419,3 +419,53 @@ test('tidbit lock shows only tidbits and waits when they are exhausted', async (
   await quiz.newRound()
   expect(quiz.state.round).toBeNull()
 })
+
+test.each([
+  ['wip', 'plans/WIP/active.md'],
+  ['todo', 'docs/plans/to do/next.md'],
+  ['latest', 'docs/plans/todo/newest.md'],
+] as const)('Plans only selection %s filters queued questions and persists', async (selection, expected) => {
+  const { host } = fakeHost({ files: {
+    '/repo/plans/WIP/active.md': '',
+    '/repo/docs/plans/to do/next.md': '',
+    '/repo/docs/plans/todo/newest.md': '',
+    '/repo/plans/done/finished.md': '',
+  } })
+  host.fs.modifiedAt = async path => path.endsWith('newest.md') ? 20 : 10
+  const quiz = new Quiz(host)
+  await host.project.set('queue', [
+    question('finished', { category: 'plans', sourceFile: 'plans/done/finished.md' }),
+    question('unknown sources', { category: 'plans' }),
+    question('active', { category: 'plans', sourceFile: 'plans/WIP/active.md' }),
+    question('next', { category: 'plans', sourceFile: 'docs/plans/to do/next.md' }),
+    question('newest', { category: 'plans', sourceFile: 'docs/plans/todo/newest.md' }),
+  ])
+  await quiz.act({ type: 'setMode', category: 'plans' })
+  await quiz.act({ type: 'setPlanSelection', selection })
+  expect((await new Quiz(host).view()).planSelection).toBe(selection)
+  await quiz.newRound()
+  expect(shown(quiz).sourceFile).toBe(expected)
+})
+
+test('Latest generates from the most recently edited active plan and follows edits', async () => {
+  const { host, runs } = fakeHost({ files: {
+    '/repo/plans/wip/first.md': '',
+    '/repo/plans/to do/second.md': '',
+    '/repo/plans/done/finished.md': '',
+  }, claude: () => questionsJson(['Plan question']) })
+  let newest = 'first.md'
+  host.fs.modifiedAt = async path => path.endsWith(newest) ? 20 : 10
+  const quiz = new Quiz(host)
+  await quiz.act({ type: 'setMode', category: 'plans' })
+  await quiz.act({ type: 'setPlanSelection', selection: 'latest' })
+  await quiz.generate()
+  await quiz.generate()
+  expect(runs.at(-1)!.argv[2]).toContain('Read plans/wip/first.md')
+  newest = 'second.md'
+  await quiz.newRound()
+  expect(quiz.state.round).toBeNull()
+  await quiz.generate()
+  await quiz.generate()
+  await quiz.generate()
+  expect(runs.at(-1)!.argv[2]).toContain('Read plans/to do/second.md')
+})
