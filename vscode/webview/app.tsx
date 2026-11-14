@@ -5,7 +5,7 @@ import { Marked } from 'marked'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { View } from '../src/panel'
-import type { Message, Question, Reaction, Tidbit } from '../src/core/types'
+import type { Category, Message, Question, Reaction, Tidbit } from '../src/core/types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -475,7 +475,7 @@ function Body({ view }: { view: View }) {
     return (
       <Card>
         <CardHeader>
-          <CardDescription>No new question yet. More are on the way.</CardDescription>
+          <CardDescription>{view.mode ? `No ${view.modes.find(mode => mode.category === view.mode)?.name.toLowerCase()} ready yet. This project is locked to this mode.` : 'No new question yet. More are on the way.'}</CardDescription>
         </CardHeader>
         <Actions>
           <KeyButton hotkey="n" variant="primary" onPress={() => send({ type: 'next' })}>
@@ -510,6 +510,19 @@ export function App({ view }: { view: View }) {
           {view.notice ? <div className="text-foreground">{view.notice}</div> : null}
           <div>
             Difficulty {Math.floor(view.skill.difficulty)} out of {view.difficultyMax} · {view.ready} generated questions ready · {view.tips} tidbits ready
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="project-mode">Project mode</label>
+            <select
+              id="project-mode"
+              className="rounded-md border border-input bg-background px-2 py-1 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              value={view.mode ?? ''}
+              onChange={event => send({ type: 'setMode', category: (event.target.value || null) as Category | null })}
+            >
+              <option value="">Weighted mix (unlocked)</option>
+              {view.modes.map(mode => <option key={mode.category} value={mode.category}>{mode.name} only</option>)}
+            </select>
+            <span>Saved for this project · applies from the next round</span>
           </div>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span>Weights: {view.weights.map(w => `${w.name} ${w.weight}`).join(' · ')}</span>

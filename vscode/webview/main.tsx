@@ -11,7 +11,7 @@ import css from './style.css?inline'
 
 // A button with a `data-hotkey` is pressed by its key (outside a text box), and Enter presses the primary one
 document.addEventListener('keydown', e => {
-  if (e.target instanceof HTMLTextAreaElement || e.metaKey || e.ctrlKey || e.altKey) return
+  if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey || e.altKey) return
   const key = e.key.toLowerCase()
   const pressed =
     document.querySelector<HTMLButtonElement>(`button[data-hotkey="${CSS.escape(key)}"]`) ??

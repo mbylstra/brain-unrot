@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 
 import { NO_IDEA, Quiz, parseQuestions, slug, stepped } from '../src/core/quiz'
 import type { Question } from '../src/core/types'
+import { SEED_TIDBITS } from '../src/core/seeds'
 import { MemoryStore, fakeHost, questionsJson } from './fake-host'
 
 // Only the given kind of round, and moving on never stops to ask anything first
@@ -360,4 +361,61 @@ test('parsers', () => {
   // Duplicate choices are dropped
   expect(parseQuestions(JSON.stringify([{ prompt: 'q', choices: ['a', 'a', 'b', 'c'], answer: 0 }]), 1)).toEqual([])
   expect(slug('  Fix: the `queue` (again)!  ')).toBe('fix-the-queue-again')
+})
+
+
+test('mode locks persist per project without changing shared weights, and can be unlocked', async () => {
+  const global = new MemoryStore()
+  const { host } = fakeHost({ global })
+  const quiz = new Quiz(host)
+  await onlyRounds(global, 'codebase')
+  await host.project.set('queue', [question('code'), question('plan', { category: 'plans' })])
+  await quiz.newRound()
+  const current = quiz.state.round
+  await quiz.act({ type: 'setMode', category: 'plans' })
+  expect(quiz.state.round).toBe(current)
+  expect((await new Quiz(host).view()).mode).toBe('plans')
+  expect((await new Quiz(fakeHost({ global }).host).view()).mode).toBeNull()
+  expect((await quiz.loadWeights()).codebase).toBe(1)
+  await quiz.newRound()
+  expect(shown(quiz).category).toBe('plans')
+  await quiz.act({ type: 'setMode', category: null })
+  await quiz.newRound()
+  expect(quiz.state.round).not.toBeNull()
+  expect((await quiz.view()).mode).toBeNull()
+})
+
+test.each(['codebase', 'concept', 'instructions', 'plans'] as const)('locking to %s never falls back to another mode or seeds', async category => {
+  const { host } = fakeHost()
+  const quiz = new Quiz(host)
+  await host.project.set('queue', [question('other', { category: category === 'codebase' ? 'plans' : 'codebase' })])
+  await quiz.act({ type: 'setMode', category })
+  await quiz.newRound()
+  expect(quiz.state.round).toBeNull()
+})
+
+test('locked mode suppresses requests to change category preferences', async () => {
+  const { host } = fakeHost()
+  await host.global.set('quiz:prefs', { offerChance: 0, preferenceChance: 1 })
+  await host.project.set('queue', [question('first'), question('second')])
+  const quiz = new Quiz(host)
+  await quiz.act({ type: 'setMode', category: 'codebase' })
+  await quiz.newRound()
+  await quiz.act({ type: 'next' })
+  expect(quiz.state.isAskingPreference).toBe(false)
+  expect(shown(quiz).prompt).toBe('second')
+})
+
+
+test('tidbit lock shows only tidbits and waits when they are exhausted', async () => {
+  const { host } = fakeHost()
+  await host.project.set('queue', [question('code')])
+  const quiz = new Quiz(host)
+  await quiz.act({ type: 'setMode', category: 'tidbit' })
+  for (const _ of SEED_TIDBITS) {
+    await quiz.newRound()
+    expect(quiz.state.round?.kind).toBe('tidbit')
+  }
+  await quiz.newRound()
+  expect(quiz.state.round).toBeNull()
 })

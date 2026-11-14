@@ -168,6 +168,7 @@ export type Action =
   | { type: 'react'; reaction: Reaction }
   | { type: 'prefer'; category?: Category }
   | { type: 'resetWeights' }
+  | { type: 'setMode'; category: Category | null }
   | { type: 'moreAboutFile'; isYes: boolean }
 
 // Models (and the seeds) put the right answer first far too often
@@ -516,6 +517,7 @@ const quizPrefsKey = 'quiz:prefs'
 // How often each kind of round comes up, kept across projects. All start at 1
 const weightsKey = 'quiz:weights'
 const skillKey = 'skill'
+const modeKey = 'quiz:mode'
 
 // One write to the queues at a time, across every project in this window: the concept queue is shared
 let lock: Promise<unknown> = Promise.resolve()
@@ -674,6 +676,11 @@ export class Quiz {
     return { offerChance: stored?.offerChance ?? OFFER_CHANCE, preferenceChance: stored?.preferenceChance ?? PREFERENCE_CHANCE }
   }
 
+  private async loadMode(): Promise<Category | null> {
+    const stored = await this.host.project.get(modeKey)
+    return CATEGORIES.find(([category]) => category === stored)?.[0] ?? null
+  }
+
   async loadWeights(): Promise<CategoryWeights> {
     const stored = (await this.host.global.get(weightsKey)) as Partial<CategoryWeights> | undefined
     return { codebase: 1, concept: 1, instructions: 1, plans: 1, tidbit: 1, ...stored }
@@ -798,8 +805,9 @@ export class Quiz {
     if (this.state.isAskingPreference) return
     const last = this.state.round
     const lastQuestion = last && last.kind !== 'tidbit' ? last.question.id : undefined
-    const order = weightedOrder(await this.loadWeights())
-    const first = await this.moreAboutFileReady()
+    const mode = await this.loadMode()
+    const order = mode ? [mode] : weightedOrder(await this.loadWeights())
+    const first = mode ? undefined : await this.moreAboutFileReady()
     const tried: Category[] = first ? [first, ...order.filter(c => c !== first)] : order
     this.debug(`round: trying ${tried.join(', ')}`)
     for (const category of tried) {
@@ -811,13 +819,13 @@ export class Quiz {
         await this.countTips()
         return
       }
-      const question = (await this.nextQuestion(category, lastQuestion)) ?? (category === 'codebase' ? await this.nextSeed(lastQuestion) : undefined)
+      const question = (await this.nextQuestion(category, lastQuestion)) ?? (!mode && category === 'codebase' ? await this.nextSeed(lastQuestion) : undefined)
       if (!question) continue
       this.debug(`round: ${question.id} ${question.sourceFile ?? (SEEDS.some(seed => seed.id === question.id) ? '(seed)' : '')}`)
       await this.update({ round: { kind: 'question', question, guess: null } })
       return
     }
-    const seed = await this.nextSeed(lastQuestion)
+    const seed = mode ? undefined : await this.nextSeed(lastQuestion)
     this.debug(`round: ${seed ? `${seed.id} (seed)` : '(none left)'}`)
     await this.update({ round: seed ? { kind: 'question', question: seed, guess: null } : null })
   }
@@ -844,7 +852,7 @@ export class Quiz {
       await this.updateRound(r => (r?.kind === 'question' ? { ...r, isOffering: true, chat: undefined, issue: undefined } : r))
       return
     }
-    if (random(1000) < preferenceChance * 1000) {
+    if (!(await this.loadMode()) && random(1000) < preferenceChance * 1000) {
       this.debug('asking which kind of round you would like more of')
       await this.update({ isAskingPreference: true })
       return
@@ -892,6 +900,10 @@ export class Quiz {
         return this.endRound()
       case 'cancelIssue':
         return this.updateRound(r => (r ? { ...r, issue: undefined } : r))
+      case 'setMode':
+        if (action.category !== null && !CATEGORIES.some(([category]) => category === action.category)) return
+        await this.host.project.set(modeKey, action.category)
+        return this.update({ isAskingPreference: false })
       case 'resetWeights':
         await this.resetWeights()
         return this.update({})
@@ -973,6 +985,8 @@ export class Quiz {
       ...this.state,
       root: this.host.root,
       difficultyMax: DIFFICULTY_MAX,
+      mode: await this.loadMode(),
+      modes: CATEGORIES.map(([category]) => ({ category, name: CATEGORY_NAMES[category] })),
       issuesDir: ISSUES_DIR,
       isClaudeFinished: this.isClaudeFinished,
       // Shown in the footer all the time
