@@ -50,7 +50,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "package": "vsce package --no-dependencies",
-    "vscode:prepublish": "pnpm run build"
+    "vscode:prepublish": "corepack pnpm run build"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.20",

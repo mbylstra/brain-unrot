@@ -26,6 +26,17 @@ tells you, so you can switch back.
 
 Build and install the extension (there's no Marketplace release yet):
 
+With [just](https://just.systems/), Node.js, Corepack, and the `code` command
+on your PATH, run these from the repository root:
+
+```sh
+just setup      # First time, or after dependencies change
+just reinstall  # Rebuild, package, and force-install in VS Code
+```
+
+Run `just` to list commands, including `build`, `package`, and `check`.
+Alternatively, with pnpm installed:
+
 ```sh
 cd vscode
 pnpm install
